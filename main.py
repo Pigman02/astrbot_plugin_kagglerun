@@ -1,9 +1,9 @@
 import os
 from astrbot.api.star import Context, Star, register
-from core.kaggle_manager import KaggleManager
-from core.file_manager import FileManager
-from core.config_manager import ConfigManager
-from core.command_handler import CommandHandler
+from .core.kaggle_manager import KaggleManager
+from .core.file_manager import FileManager
+from .core.config_manager import ConfigManager
+from .core.command_handler import CommandHandler
 
 class KagglePlugin(Star):
     def __init__(self, context: Context, config):
