@@ -23,10 +23,11 @@ class KagglePlugin(Star):
         self.notebooks_file = Path("data/kaggle_notebooks.json")
         self.notebooks: Dict[str, str] = {}
         self.output_dir = Path(self.config.output_dir)
+        self.cleanup_task = None
         self.setup_directories()
         self.setup_kaggle_api()
         self.load_notebooks()
-        asyncio.create_task(self.cleanup_old_files())
+        self.start_cleanup_task()
         
     def setup_directories(self):
         """设置输出目录"""
@@ -51,6 +52,35 @@ class KagglePlugin(Star):
             logger.info("Kaggle API配置完成")
         except Exception as e:
             logger.error(f"Kaggle API配置失败: {e}")
+
+    def start_cleanup_task(self):
+        """启动清理任务"""
+        self.cleanup_task = asyncio.create_task(self.cleanup_old_files())
+
+    async def cleanup_old_files(self):
+        """清理旧文件任务"""
+        while True:
+            try:
+                await asyncio.sleep(3600)  # 每小时检查一次
+                
+                if not self.output_dir.exists():
+                    continue
+                    
+                cutoff_time = datetime.now() - timedelta(days=self.config.retention_days)
+                
+                for file_path in self.output_dir.glob('*.zip'):
+                    if file_path.is_file():
+                        file_time = datetime.fromtimestamp(file_path.stat().st_mtime)
+                        if file_time < cutoff_time:
+                            file_path.unlink()
+                            logger.info(f"已删除旧文件: {file_path.name}")
+                            
+            except asyncio.CancelledError:
+                logger.info("清理任务已取消")
+                break
+            except Exception as e:
+                logger.error(f"清理文件失败: {e}")
+                await asyncio.sleep(300)  # 错误后等待5分钟
 
     def load_notebooks(self):
         """加载notebook列表"""
@@ -223,11 +253,9 @@ class KagglePlugin(Star):
             # 直接发送文件
             try:
                 from astrbot.api.message_components import File
-                file_size = zip_path.stat().st_size / (1024 * 1024)
                 await event.send(event.chain_result([
                     File.fromFileSystem(str(zip_path), zip_path.name)
                 ]))
-                # 不发送额外消息，保持简洁
             except Exception as e:
                 logger.error(f"发送文件失败: {e}")
                 yield event.plain_result(f"📦 完成: {zip_path.name}")
@@ -297,7 +325,7 @@ class KagglePlugin(Star):
         if session_id in self.active_sessions and self.should_keep_running(event.message_str):
             self.active_sessions[session_id] = datetime.now()
 
-    # 其他辅助方法保持不变但简化输出
+    # 其他辅助方法
     async def list_notebooks(self, event: AstrMessageEvent):
         """简洁列出notebook"""
         if not self.notebooks:
@@ -342,7 +370,6 @@ class KagglePlugin(Star):
         
         yield event.plain_result(message)
 
-    # 其他方法保持不变...
     def get_notebook_by_index_or_name(self, identifier: str) -> Optional[tuple]:
         """通过序号或名称获取notebook名称和路径"""
         if identifier.isdigit():
@@ -359,6 +386,15 @@ class KagglePlugin(Star):
                 return (name, path)
         
         return None
+
+    def is_admin_user(self, user_id: str) -> bool:
+        """检查用户是否是管理员"""
+        return user_id in self.config.admin_users
+
+    def should_keep_running(self, message: str) -> bool:
+        """检查消息中是否包含关键词"""
+        message_lower = message.lower()
+        return any(keyword.lower() in message_lower for keyword in self.config.keywords)
 
     async def add_notebook(self, event: AstrMessageEvent, name: str, path: str):
         """添加notebook - 简洁版"""
@@ -389,6 +425,19 @@ class KagglePlugin(Star):
         del self.notebooks[name]
         self.save_notebooks()
         yield event.plain_result(f"✅ 已删除: {name}")
+
+    async def terminate(self):
+        """插件卸载时清理"""
+        if self.cleanup_task:
+            self.cleanup_task.cancel()
+            try:
+                await self.cleanup_task
+            except asyncio.CancelledError:
+                pass
+        
+        self.active_sessions.clear()
+        self.running_notebooks.clear()
+        logger.info("Kaggle插件已卸载")
 
 @register("kaggle_runner", "AstrBot", "Kaggle Notebook执行插件", "1.0.0")
 class KaggleRunner(KagglePlugin):
