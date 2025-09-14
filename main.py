@@ -31,45 +31,46 @@ class KagglePlugin(Star):
 
     # ... 其他方法保持不变 ...
 
+    # 主命令 - 只显示帮助信息
     @filter.command("kaggle")
-    async def kaggle_command(self, event: AstrMessageEvent, subcommand: str = ""):
-        """Kaggle主命令 - 修复参数问题"""
-        if not subcommand:
-            yield event.plain_result("📋 /kaggle [list|add|remove|run|outputs|off|status]")
+    async def kaggle_main(self, event: AstrMessageEvent):
+        """Kaggle主命令"""
+        yield event.plain_result(
+            "📋 Kaggle Notebook管理器\n\n"
+            "可用命令:\n"
+            "/kaggle list - 查看可用notebook\n"
+            "/kaggle add <名称> <路径> - 添加notebook\n"
+            "/kaggle remove <名称> - 删除notebook\n"
+            "/kaggle run [名称] - 运行notebook\n"
+            "/kaggle outputs - 查看输出文件\n"
+            "/kaggle off - 停止运行\n"
+            "/kaggle status - 查看状态\n"
+            "/kaggle config - 查看配置"
+        )
+
+    # 列出notebook
+    @filter.command("kaggle list")
+    async def kaggle_list(self, event: AstrMessageEvent):
+        """列出所有notebook"""
+        if not self.notebooks:
+            yield event.plain_result("📝 还没有添加任何notebook")
             return
         
-        subcommand = subcommand.lower()
+        message = "📋 Notebook列表:\n"
+        for i, (name, path) in enumerate(self.notebooks.items(), 1):
+            message += f"{i}. {name} -> {path}\n"
         
-        # 获取完整的消息内容来解析参数
-        full_message = event.message_str.strip()
-        parts = full_message.split()
+        if self.config.default_notebook:
+            message += f"\n默认notebook: {self.config.default_notebook}"
         
-        if subcommand == "list":
-            await self.list_notebooks(event)
-        elif subcommand == "add" and len(parts) >= 3:
-            await self.add_notebook(event, parts[2], ' '.join(parts[3:]))
-        elif subcommand == "remove" and len(parts) >= 2:
-            await self.remove_notebook(event, parts[2])
-        elif subcommand == "run":
-            notebook_name = parts[2] if len(parts) >= 3 else None
-            await self.run_specific_notebook(event, notebook_name)
-        elif subcommand == "outputs":
-            await self.list_outputs(event)
-        elif subcommand == "off":
-            await self.stop_notebook(event)
-        elif subcommand == "status":
-            await self.show_status(event)
-        else:
-            yield event.plain_result("❌ 命令错误")
+        yield event.plain_result(message)
 
-    async def add_notebook(self, event: AstrMessageEvent, name: str, path: str):
+    # 添加notebook
+    @filter.command("kaggle add")
+    async def kaggle_add(self, event: AstrMessageEvent, name: str, path: str):
         """添加notebook"""
         if not self.is_admin_user(event.get_sender_id()):
             yield event.plain_result("❌ 需要管理员权限")
-            return
-        
-        if not name or not path:
-            yield event.plain_result("❌ 请提供名称和路径")
             return
         
         if name in self.notebooks:
@@ -80,25 +81,150 @@ class KagglePlugin(Star):
         self.save_notebooks()
         yield event.plain_result(f"✅ 已添加: {name} -> {path}")
 
-    async def remove_notebook(self, event: AstrMessageEvent, identifier: str):
+    # 删除notebook
+    @filter.command("kaggle remove")
+    async def kaggle_remove(self, event: AstrMessageEvent, name: str):
         """删除notebook"""
         if not self.is_admin_user(event.get_sender_id()):
             yield event.plain_result("❌ 需要管理员权限")
             return
         
-        if not identifier:
-            yield event.plain_result("❌ 请提供notebook名称或序号")
-            return
-        
-        notebook_info = self.get_notebook_by_index_or_name(identifier)
-        if not notebook_info:
+        if name not in self.notebooks:
+            # 尝试按序号删除
+            if name.isdigit():
+                index = int(name) - 1
+                notebooks_list = list(self.notebooks.items())
+                if 0 <= index < len(notebooks_list):
+                    name, path = notebooks_list[index]
+                    del self.notebooks[name]
+                    self.save_notebooks()
+                    yield event.plain_result(f"✅ 已删除: {name}")
+                    return
+            
             yield event.plain_result("❌ 未找到指定的notebook")
             return
         
-        name, _ = notebook_info
         del self.notebooks[name]
         self.save_notebooks()
         yield event.plain_result(f"✅ 已删除: {name}")
+
+    # 运行notebook
+    @filter.command("kaggle run")
+    async def kaggle_run(self, event: AstrMessageEvent, name: str = None):
+        """运行notebook"""
+        if not name and self.config.default_notebook:
+            name = self.config.default_notebook
+        
+        if not name:
+            yield event.plain_result("❌ 请指定notebook名称或设置默认notebook")
+            return
+        
+        notebook_info = self.get_notebook_by_index_or_name(name)
+        if not notebook_info:
+            yield event.plain_result("❌ Notebook不存在")
+            return
+        
+        notebook_name, notebook_path = notebook_info
+        
+        await event.send(event.plain_result("🚀 运行中..."))
+        
+        zip_path = await self.run_notebook(notebook_path, notebook_name, event)
+        
+        if zip_path and self.config.send_to_group:
+            try:
+                from astrbot.api.message_components import File
+                await event.send(event.chain_result([
+                    File.fromFileSystem(str(zip_path), zip_path.name)
+                ]))
+            except Exception as e:
+                logger.error(f"发送文件失败: {e}")
+                yield event.plain_result(f"📦 完成: {zip_path.name}")
+        elif zip_path:
+            yield event.plain_result(f"📦 完成: {zip_path.name}")
+        else:
+            yield event.plain_result("❌ 运行失败")
+
+    # 查看输出文件
+    @filter.command("kaggle outputs")
+    async def kaggle_outputs(self, event: AstrMessageEvent):
+        """查看输出文件"""
+        files = list(self.output_dir.glob('*.zip'))
+        if not files:
+            yield event.plain_result("📭 还没有输出文件")
+            return
+        
+        files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        
+        message = "📦 输出文件列表:\n\n"
+        for i, file_path in enumerate(files[:5], 1):
+            file_time = datetime.fromtimestamp(file_path.stat().st_mtime)
+            file_size = file_path.stat().st_size / (1024 * 1024)
+            days_old = (datetime.now() - file_time).days
+            remaining_days = max(0, self.config.retention_days - days_old)
+            
+            message += f"{i}. {file_path.name}\n"
+            message += f"   大小: {file_size:.1f}MB | 创建: {file_time.strftime('%m-%d %H:%M')}\n"
+            message += f"   剩余: {remaining_days}天\n\n"
+        
+        yield event.plain_result(message)
+
+    # 停止运行
+    @filter.command("kaggle off")
+    async def kaggle_off(self, event: AstrMessageEvent):
+        """停止运行"""
+        session_id = event.get_session_id()
+        notebook_name = self.running_notebooks.get(session_id)
+        
+        if not notebook_name:
+            yield event.plain_result("❌ 没有正在运行的notebook")
+            return
+        
+        notebook_info = self.get_notebook_by_index_or_name(notebook_name)
+        if not notebook_info:
+            yield event.plain_result("❌ 找不到notebook信息")
+            return
+        
+        _, notebook_path = notebook_info
+        
+        if await self.stop_kaggle_notebook(notebook_path):
+            self.running_notebooks.pop(session_id, None)
+            yield event.plain_result("⏹️ 已停止运行")
+        else:
+            yield event.plain_result("❌ 停止失败")
+
+    # 查看状态
+    @filter.command("kaggle status")
+    async def kaggle_status(self, event: AstrMessageEvent):
+        """查看状态"""
+        session_id = event.get_session_id()
+        running = self.running_notebooks.get(session_id)
+        
+        message = "⚡ 当前状态:\n"
+        message += f"• 运行中: {'✅' if running else '❌'}"
+        
+        if running:
+            message += f" - {running}"
+        
+        message += f"\n• 默认notebook: {self.config.default_notebook or '未设置'}"
+        message += f"\n• 总notebook数: {len(self.notebooks)}"
+        message += f"\n• 输出文件数: {len(list(self.output_dir.glob('*.zip')))}"
+        
+        yield event.plain_result(message)
+
+    # 查看配置
+    @filter.command("kaggle config")
+    async def kaggle_config(self, event: AstrMessageEvent):
+        """查看配置"""
+        config_info = (
+            f"⚙️ 当前配置:\n"
+            f"• 自动发送文件: {'✅' if self.config.send_to_group else '❌'}\n"
+            f"• 文件保留天数: {self.config.retention_days}天\n"
+            f"• 自动启动: {'✅' if self.config.enable_auto_start else '❌'}\n"
+            f"• 超时时间: {self.config.timeout_minutes}分钟\n"
+            f"• 白名单群组: {len(self.config.whitelist_groups)}个\n"
+            f"• 管理员用户: {len(self.config.admin_users)}个"
+        )
+        yield event.plain_result(config_info)
 
     # ... 其他方法保持不变 ...
 
