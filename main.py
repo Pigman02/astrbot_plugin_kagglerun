@@ -429,6 +429,24 @@ class KagglePlugin(Star):
         )
         yield event.plain_result(config_info)
 
+    @kaggle_group.command("test")
+    async def kaggle_test(self, event: AstrMessageEvent):
+        """测试Kaggle API连接"""
+        try:
+            from kaggle.api.kaggle_api_extended import KaggleApi
+            api = KaggleApi()
+            api.authenticate()
+            
+            # 测试列出notebooks
+            kernels = api.kernels_list(page_size=5)
+            if kernels:
+                yield event.plain_result("✅ Kaggle API连接正常")
+            else:
+                yield event.plain_result("⚠️ API连接正常但未找到notebooks")
+                
+        except Exception as e:
+            yield event.plain_result(f"❌ API连接失败: {str(e)}")
+
     async def auto_start_notebook(self, event: AstrMessageEvent):
         """自动启动默认notebook"""
         if not self.config.enable_auto_start or not self.config.default_notebook:
