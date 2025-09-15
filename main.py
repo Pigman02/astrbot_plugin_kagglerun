@@ -174,7 +174,7 @@ class KagglePlugin(Star):
             # 创建临时目录并下载
             temp_dir = self.output_dir / "temp" / output_name
             temp_dir.mkdir(parents=True, exist_ok=True)
-            api.kernels_output(f"{username}/{slug}", path=str(temp_dir))
+            api.kernels_pull(f"{username}/{slug}", path=str(temp_dir))
             
             # 创建ZIP文件
             zip_filename = f"{output_name}.zip"
@@ -207,7 +207,7 @@ class KagglePlugin(Star):
             
             # 运行notebook
             logger.info(f"尝试运行notebook: {notebook_path}")
-            result = api.kernels_push(notebook_path)
+            result = api.kernels_push(notebook=notebook_path)
             logger.info(f"API返回结果: {result}")
             
             if result.get('status') == 'ok':
