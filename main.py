@@ -206,7 +206,9 @@ class KagglePlugin(Star):
                 self.running_notebooks[session_id] = notebook_name
             
             # 运行notebook
+            logger.info(f"尝试运行notebook: {notebook_path}")
             result = api.kernels_push(notebook_path)
+            logger.info(f"API返回结果: {result}")
             
             if result.get('status') == 'ok':
                 # 下载并打包输出
@@ -255,7 +257,8 @@ class KagglePlugin(Star):
             "/kaggle outputs - 查看输出文件\n"
             "/kaggle off - 停止运行\n"
             "/kaggle status - 查看状态\n"
-            "/kaggle config - 查看配置"
+            "/kaggle config - 查看配置\n"
+            "/kaggle test - 测试API连接"
         )
 
     @kaggle_group.command("list")
@@ -332,7 +335,7 @@ class KagglePlugin(Star):
         
         notebook_name, notebook_path = notebook_info
         
-        await event.send(event.plain_result("🚀 运行中..."))
+        await event.send(event.plain_result(f"🚀 正在运行: {notebook_name} ({notebook_path})"))
         
         zip_path = await self.run_notebook(notebook_path, notebook_name, event)
         
@@ -348,7 +351,7 @@ class KagglePlugin(Star):
         elif zip_path:
             yield event.plain_result(f"📦 完成: {zip_path.name}")
         else:
-            yield event.plain_result("❌ 运行失败")
+            yield event.plain_result("❌ 运行失败，请检查notebook路径是否正确")
 
     @kaggle_group.command("outputs")
     async def kaggle_outputs(self, event: AstrMessageEvent):
@@ -428,6 +431,24 @@ class KagglePlugin(Star):
             f"• 管理员用户: {len(self.config.admin_users)}个"
         )
         yield event.plain_result(config_info)
+
+    @kaggle_group.command("test")
+    async def kaggle_test(self, event: AstrMessageEvent):
+        """测试Kaggle API连接"""
+        try:
+            from kaggle.api.kaggle_api_extended import KaggleApi
+            api = KaggleApi()
+            api.authenticate()
+            
+            # 测试列出notebooks
+            kernels = api.kernels_list(page_size=5)
+            if kernels:
+                yield event.plain_result("✅ Kaggle API连接正常")
+            else:
+                yield event.plain_result("⚠️ API连接正常但未找到notebooks")
+                
+        except Exception as e:
+            yield event.plain_result(f"❌ API连接失败: {str(e)}")
 
     async def auto_start_notebook(self, event: AstrMessageEvent):
         """自动启动默认notebook"""
