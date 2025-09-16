@@ -326,13 +326,17 @@ class KagglePlugin(Star):
             
             # 检查notebook状态
             status = api.kernels_status(path)
-            yield event.plain_result(f"📊 状态: {status.get('status', 'unknown')}")
-            yield event.plain_result(f"📈 运行次数: {status.get('totalRunCount', 0)}")
-            yield event.plain_result(f"⭐ 投票数: {status.get('totalVotes', 0)}")
+            # 修复：直接访问响应对象属性，而不是使用get方法
+            yield event.plain_result(f"📊 状态: {getattr(status, 'status', 'unknown')}")
+            yield event.plain_result(f"📈 运行次数: {getattr(status, 'totalRunCount', 0)}")
+            yield event.plain_result(f"⭐ 投票数: {getattr(status, 'totalVotes', 0)}")
             
         except Exception as e:
-            if "Not Found" in str(e):
+            if "Not Found" in str(e) or "404" in str(e):
                 yield event.plain_result(f"❌ Notebook不存在: {path}")
+            elif "403" in str(e) or "Forbidden" in str(e):
+                yield event.plain_result(f"❌ 访问被拒绝: {path}")
+                yield event.plain_result("💡 可能的原因: 1.notebook不是公开的 2.API密钥权限不足 3.账号未验证邮箱")
             else:
                 yield event.plain_result(f"❌ 检查失败: {str(e)}")
 
