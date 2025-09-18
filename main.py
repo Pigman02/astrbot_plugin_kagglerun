@@ -147,8 +147,8 @@ class KagglePlugin(Star):
             # 获取运行中的kernels并停止匹配的
             kernels = api.kernels_list()
             for kernel in kernels:
-                if kernel['ref'] == f"{username}/{slug}":
-                    api.kernels_stop(kernel['id'])
+                if kernel.ref == f"{username}/{slug}":
+                    api.kernels_stop(kernel.id)
                     return True
             
             return False
@@ -176,7 +176,7 @@ class KagglePlugin(Star):
             temp_dir.mkdir(parents=True, exist_ok=True)
             
             # 下载输出文件
-            api.kernels_output(f"{username}/{slug}", path=str(temp_dir))
+            api.kernel_output(f"{username}/{slug}", path=str(temp_dir))
             
             # 检查是否有文件下载
             files = list(temp_dir.glob('*'))
@@ -221,7 +221,7 @@ class KagglePlugin(Star):
             username, slug = notebook_path.split('/', 1)
             
             # 尝试获取notebook状态来验证
-            status = api.kernels_status(notebook_path)
+            status = api.kernel_status(notebook_path)
             return status is not None
             
         except Exception as e:
@@ -240,8 +240,8 @@ class KagglePlugin(Star):
             
             # 验证notebook状态
             try:
-                kernel_status = api.kernels_status(notebook_path)
-                status = kernel_status.get('status', 'unknown')
+                kernel_status = api.kernel_status(notebook_path)
+                status = getattr(kernel_status, 'status', 'unknown')
                 
                 if event:
                     await event.send(event.plain_result(f"📊 Notebook状态: {status}"))
@@ -264,7 +264,7 @@ class KagglePlugin(Star):
             
             # 记录运行中的notebook
             if event:
-                session_id = event.get_session_id()
+                session_id = getattr(event, 'session_id', 'default')
                 self.running_notebooks[session_id] = notebook_name
             
             if event:
@@ -277,7 +277,7 @@ class KagglePlugin(Star):
                 temp_dir = Path(tempfile.mkdtemp(prefix="kaggle_"))
                 
                 # 下载notebook
-                api.kernels_pull(notebook_path, path=str(temp_dir))
+                api.kernel_pull(notebook_path, path=str(temp_dir))
                 
                 if event:
                     await event.send(event.plain_result("✅ Notebook下载完成"))
@@ -292,11 +292,15 @@ class KagglePlugin(Star):
             
             # 2. 然后push运行notebook
             try:
-                result = api.kernels_push(notebook_path)
+                # 使用kernel_push而不是kernels_push
+                result = api.kernel_push(notebook_path)
                 
-                if result and result.get('status') == 'ok':
+                if result and hasattr(result, 'status') and result.status == 'ok':
                     if event:
                         await event.send(event.plain_result("✅ 运行完成，下载输出文件中..."))
+                    
+                    # 等待一段时间让notebook完成运行
+                    await asyncio.sleep(10)
                     
                     # 3. 下载输出文件
                     zip_path = await self.download_and_package_output(notebook_path, notebook_name)
@@ -313,7 +317,7 @@ class KagglePlugin(Star):
                     
                     return zip_path
                 else:
-                    error_msg = result.get('error', '未知错误') if result else '无响应'
+                    error_msg = getattr(result, 'error', '未知错误') if result else '无响应'
                     if event:
                         await event.send(event.plain_result(f"❌ 运行失败: {error_msg}"))
                     
@@ -344,7 +348,7 @@ class KagglePlugin(Star):
         except Exception as e:
             logger.error(f"运行Notebook失败: {e}")
             if event:
-                session_id = event.get_session_id()
+                session_id = getattr(event, 'session_id', 'default')
                 if session_id in self.running_notebooks:
                     del self.running_notebooks[session_id]
                 await event.send(event.plain_result(f"❌ 运行失败: {str(e)}"))
@@ -417,7 +421,7 @@ class KagglePlugin(Star):
                 return
             
             # 检查notebook状态
-            status = api.kernels_status(path)
+            status = api.kernel_status(path)
             yield event.plain_result(f"📊 状态: {getattr(status, 'status', 'unknown')}")
             yield event.plain_result(f"📈 运行次数: {getattr(status, 'totalRunCount', 0)}")
             yield event.plain_result(f"⭐ 投票数: {getattr(status, 'totalVotes', 0)}")
@@ -454,7 +458,7 @@ class KagglePlugin(Star):
     @kaggle_group.command("add")
     async def kaggle_add(self, event: AstrMessageEvent, name: str, path: str):
         """添加notebook"""
-        if not self.is_admin_user(event.get_sender_id()):
+        if not self.is_admin_user(getattr(event, 'sender_id', 'unknown')):
             yield event.plain_result("❌ 需要管理员权限")
             return
         
@@ -476,7 +480,7 @@ class KagglePlugin(Star):
             api.authenticate()
             
             # 尝试获取notebook信息来验证
-            status = api.kernels_status(path)
+            status = api.kernel_status(path)
             
             if status:
                 self.notebooks[name] = path
@@ -498,7 +502,7 @@ class KagglePlugin(Star):
     @kaggle_group.command("remove")
     async def kaggle_remove(self, event: AstrMessageEvent, name: str):
         """删除notebook"""
-        if not self.is_admin_user(event.get_sender_id()):
+        if not self.is_admin_user(getattr(event, 'sender_id', 'unknown')):
             yield event.plain_result("❌ 需要管理员权限")
             return
         
