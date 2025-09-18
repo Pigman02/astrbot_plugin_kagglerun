@@ -156,7 +156,7 @@ class KagglePlugin(Star):
             logger.error(f"停止notebook失败: {e}")
             return False
 
-    async def download_and_package_output(self, kernel_id: str, notebook_name: str) -> Optional[Path]:
+    async def download_and_package_output(self, notebook_path: str, notebook_name: str) -> Optional[Path]:
         """下载并打包输出文件"""
         try:
             from kaggle.api.kaggle_api_extended import KaggleApi
@@ -166,10 +166,24 @@ class KagglePlugin(Star):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_name = f"{timestamp}_{notebook_name}"
             
-            # 创建临时目录并下载
+            if '/' not in notebook_path:
+                return None
+            
+            username, slug = notebook_path.split('/', 1)
+            
+            # 创建临时目录
             temp_dir = self.output_dir / "temp" / output_name
             temp_dir.mkdir(parents=True, exist_ok=True)
-            api.kernels_output(kernel_id, path=str(temp_dir))
+            
+            # 下载输出文件
+            api.kernels_output(f"{username}/{slug}", path=str(temp_dir))
+            
+            # 检查是否有文件下载
+            files = list(temp_dir.glob('*'))
+            if not files:
+                logger.warning(f"没有找到输出文件: {notebook_path}")
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return None
             
             # 创建ZIP文件
             zip_filename = f"{output_name}.zip"
@@ -186,6 +200,11 @@ class KagglePlugin(Star):
             
         except Exception as e:
             logger.error(f"打包输出文件失败: {e}")
+            # 清理临时目录
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except:
+                pass
             return None
 
     def validate_notebook_path(self, notebook_path: str) -> bool:
@@ -210,7 +229,7 @@ class KagglePlugin(Star):
             return False
 
     async def run_notebook(self, notebook_path: str, notebook_name: str, event: AstrMessageEvent = None) -> Optional[Path]:
-        """运行notebook并返回输出文件路径"""
+        """运行notebook并返回输出文件路径 - 正确的pull→push流程"""
         try:
             from kaggle.api.kaggle_api_extended import KaggleApi
             api = KaggleApi()
@@ -219,29 +238,29 @@ class KagglePlugin(Star):
             if event:
                 await event.send(event.plain_result("🔍 验证notebook是否存在..."))
             
-            # 首先验证notebook路径格式
-            if '/' not in notebook_path:
-                if event:
-                    await event.send(event.plain_result("❌ Notebook路径格式错误，应为: username/slug"))
-                return None
-            
-            username, slug = notebook_path.split('/', 1)
-            
-            # 验证notebook是否存在
+            # 验证notebook状态
             try:
-                status = api.kernels_status(notebook_path)
+                kernel_status = api.kernels_status(notebook_path)
+                status = kernel_status.get('status', 'unknown')
+                
                 if event:
-                    await event.send(event.plain_result(f"✅ Notebook验证通过: {getattr(status, 'status', 'unknown')}"))
+                    await event.send(event.plain_result(f"📊 Notebook状态: {status}"))
+                
+                # 检查状态是否有效
+                if status in ['CANCEL_ACKNOWLEDGED', 'ERROR', 'FAILED', 'CANCELLED']:
+                    if event:
+                        await event.send(event.plain_result("❌ Notebook状态无效，可能已被取消或不存在"))
+                    return None
+                    
             except Exception as e:
                 if "Not Found" in str(e) or "404" in str(e):
                     if event:
                         await event.send(event.plain_result(f"❌ Notebook不存在: {notebook_path}"))
-                        await event.send(event.plain_result("💡 请检查：1.路径是否正确 2.notebook是否公开 3.是否有访问权限"))
                     return None
                 else:
                     if event:
                         await event.send(event.plain_result(f"⚠️ 验证时出现错误: {str(e)}"))
-                    return None
+                    # 继续尝试运行
             
             # 记录运行中的notebook
             if event:
@@ -249,93 +268,77 @@ class KagglePlugin(Star):
                 self.running_notebooks[session_id] = notebook_name
             
             if event:
+                await event.send(event.plain_result("📥 正在下载notebook..."))
+            
+            # 1. 首先pull获取notebook
+            try:
+                # 创建临时目录
+                import tempfile
+                temp_dir = Path(tempfile.mkdtemp(prefix="kaggle_"))
+                
+                # 下载notebook
+                api.kernels_pull(notebook_path, path=str(temp_dir))
+                
+                if event:
+                    await event.send(event.plain_result("✅ Notebook下载完成"))
+                    
+            except Exception as pull_error:
+                if event:
+                    await event.send(event.plain_result(f"❌ 下载notebook失败: {str(pull_error)}"))
+                return None
+            
+            if event:
                 await event.send(event.plain_result("🚀 开始运行notebook..."))
             
-            # 使用 kernels_create 方法运行notebook（更好的方案）
+            # 2. 然后push运行notebook
             try:
-                # 创建kernel运行配置
-                kernel_spec = {
-                    "id": notebook_path,
-                    "kernel_type": "notebook"
-                }
+                result = api.kernels_push(notebook_path)
                 
-                # 创建并运行kernel
-                result = api.kernels_create(kernel_spec)
-                
-                if hasattr(result, 'id'):
-                    kernel_id = result.id
+                if result and result.get('status') == 'ok':
                     if event:
-                        await event.send(event.plain_result(f"✅ 已启动运行，Kernel ID: {kernel_id}"))
-                        await event.send(event.plain_result("⏳ 等待运行完成，这可能需要几分钟..."))
+                        await event.send(event.plain_result("✅ 运行完成，下载输出文件中..."))
                     
-                    # 等待运行完成，定期检查状态
-                    max_wait_time = 600  # 10分钟超时
-                    wait_interval = 30   # 每30秒检查一次
-                    elapsed = 0
+                    # 3. 下载输出文件
+                    zip_path = await self.download_and_package_output(notebook_path, notebook_name)
                     
-                    while elapsed < max_wait_time:
-                        await asyncio.sleep(wait_interval)
-                        elapsed += wait_interval
-                        
-                        # 检查运行状态
-                        status = api.kernels_status(kernel_id)
-                        current_status = getattr(status, 'status', 'unknown').lower()
-                        
-                        if event and elapsed % 60 == 0:  # 每分钟更新状态
-                            await event.send(event.plain_result(f"📊 当前状态: {current_status}"))
-                        
-                        # 检查是否完成运行
-                        if current_status in ['complete', 'error', 'canceled']:
-                            break
+                    # 清理临时目录
+                    try:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except:
+                        pass
                     
-                    # 获取最终状态
-                    final_status = api.kernels_status(kernel_id)
-                    final_status_str = getattr(final_status, 'status', 'unknown').lower()
+                    # 清理运行记录
+                    if event and session_id in self.running_notebooks:
+                        del self.running_notebooks[session_id]
                     
-                    if final_status_str == 'complete':
-                        if event:
-                            await event.send(event.plain_result("✅ 运行完成，下载输出文件中..."))
-                        
-                        # 下载并打包输出
-                        zip_path = await self.download_and_package_output(kernel_id, notebook_name)
-                        
-                        # 清理运行记录
-                        if event:
-                            session_id = event.get_session_id()
-                            if session_id in self.running_notebooks:
-                                del self.running_notebooks[session_id]
-                        
-                        return zip_path
-                    else:
-                        error_msg = getattr(final_status, 'failureMessage', f"运行状态: {final_status_str}")
-                        if event:
-                            await event.send(event.plain_result(f"❌ 运行失败: {error_msg}"))
-                        return None
-                        
+                    return zip_path
                 else:
+                    error_msg = result.get('error', '未知错误') if result else '无响应'
                     if event:
-                        await event.send(event.plain_result("❌ 运行失败: 无法获取Kernel ID"))
+                        await event.send(event.plain_result(f"❌ 运行失败: {error_msg}"))
+                    
+                    # 清理临时目录
+                    try:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except:
+                        pass
+                        
                     return None
                     
             except Exception as run_error:
-                error_msg = str(run_error)
-                if "Invalid folder" in error_msg:
+                if "Invalid folder" in str(run_error) or "not found" in str(run_error).lower():
                     if event:
                         await event.send(event.plain_result("❌ Notebook路径无效或不存在"))
-                        await event.send(event.plain_result("💡 请确认：1.用户名是否正确 2.notebook slug是否正确 3.notebook是否为公开状态"))
-                elif "404" in error_msg or "Not Found" in error_msg:
-                    if event:
-                        await event.send(event.plain_result("❌ Notebook不存在或已被删除"))
-                elif "403" in error_msg or "Forbidden" in error_msg:
-                    if event:
-                        await event.send(event.plain_result("❌ 权限不足，请检查API密钥和账号权限"))
-                elif "already running" in error_msg.lower():
-                    if event:
-                        await event.send(event.plain_result("⚠️ Notebook已经在运行中"))
-                        await event.send(event.plain_result("💡 请等待当前运行完成或使用 /kaggle off 停止运行"))
                 else:
                     if event:
-                        await event.send(event.plain_result(f"❌ 运行过程中出错: {error_msg}"))
+                        await event.send(event.plain_result(f"❌ 运行过程中出错: {str(run_error)}"))
+                
+                # 清理临时目录
+                try:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                except:
+                    pass
+                    
                 return None
                 
         except Exception as e:
