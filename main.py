@@ -253,126 +253,218 @@ class KagglePlugin(Star):
             return False
 
     async def run_notebook(self, notebook_path: str, notebook_name: str, event: AstrMessageEvent = None) -> Optional[Path]:
-    """运行notebook并返回输出文件路径 - 修复路径问题"""
-    try:
-        from kaggle.api.kaggle_api_extended import KaggleApi
-        api = KaggleApi()
-        api.authenticate()
-        
-        # ... 前面的验证代码保持不变 ...
-        
-        if event:
-            await event.send(event.plain_result("📥 正在下载notebook..."))
-        
-        # 创建下载目录 - 使用更简单的命名
-        timestamp = datetime.now().strftime("%H%M%S")
-        download_dir = self.downloads_dir / f"temp_{timestamp}"
-        download_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 1. 首先pull获取notebook
+        """运行notebook并返回输出文件路径 - 修复路径问题"""
         try:
-            # 下载notebook到指定目录
-            api.kernels_pull(notebook_path, path=str(download_dir))
+            from kaggle.api.kaggle_api_extended import KaggleApi
+            api = KaggleApi()
+            api.authenticate()
             
             if event:
-                await event.send(event.plain_result("✅ Notebook下载完成"))
-                
-            # 检查下载的文件
-            downloaded_files = list(download_dir.glob('*'))
-            if not downloaded_files:
-                if event:
-                    await event.send(event.plain_result("❌ 下载的文件为空"))
-                shutil.rmtree(download_dir, ignore_errors=True)
-                return None
-                
-            if event:
-                await event.send(event.plain_result(f"📄 下载的文件: {[f.name for f in downloaded_files]}"))
-                
-        except Exception as pull_error:
-            if event:
-                await event.send(event.plain_result(f"❌ 下载notebook失败: {str(pull_error)}"))
-            shutil.rmtree(download_dir, ignore_errors=True)
-            return None
-        
-        if event:
-            await event.send(event.plain_result("🚀 开始运行notebook..."))
-        
-        # 2. 关键修复：确保目录结构正确
-        try:
-            # 检查目录结构，Kaggle API可能期望特定的结构
-            kernel_metadata_file = download_dir / "kernel-metadata.json"
+                await event.send(event.plain_result("🔍 验证notebook是否存在..."))
             
-            # 如果没有metadata文件，尝试创建或使用其他方法
-            if not kernel_metadata_file.exists():
+            # 验证notebook状态
+            try:
+                kernel_status = api.kernels_status(notebook_path)
+                status = getattr(kernel_status, 'status', 'unknown')
+                
                 if event:
-                    await event.send(event.plain_result("⚠️ 未找到kernel-metadata.json，尝试直接运行..."))
+                    await event.send(event.plain_result(f"📊 Notebook状态: {status}"))
                 
-                # 尝试直接使用文件路径而不是目录
-                notebook_file = None
-                for file in download_dir.glob('*.ipynb'):
-                    notebook_file = file
-                    break
-                
-                if not notebook_file:
-                    for file in download_dir.glob('*.py'):
-                        notebook_file = file
-                        break
-                
-                if notebook_file:
-                    # 使用文件路径而不是目录
-                    result = api.kernels_push(str(notebook_file))
+                # 检查状态是否有效
+                if status in ['CANCEL_ACKNOWLEDGED', 'ERROR', 'FAILED', 'CANCELLED']:
+                    if event:
+                        await event.send(event.plain_result("❌ Notebook状态无效，可能已被取消或不存在"))
+                    return None
+                    
+            except Exception as e:
+                if "Not Found" in str(e) or "404" in str(e):
+                    if event:
+                        await event.send(event.plain_result(f"❌ Notebook不存在: {notebook_path}"))
+                    return None
                 else:
                     if event:
-                        await event.send(event.plain_result("❌ 未找到有效的notebook文件"))
+                        await event.send(event.plain_result(f"⚠️ 验证时出现错误: {str(e)}"))
+            
+            # 记录运行中的notebook
+            if event:
+                session_id = getattr(event, 'session_id', 'default')
+                self.running_notebooks[session_id] = notebook_name
+            
+            if event:
+                await event.send(event.plain_result("📥 正在下载notebook..."))
+            
+            # 创建下载目录 - 使用更简单的命名
+            timestamp = datetime.now().strftime("%H%M%S")
+            download_dir = self.downloads_dir / f"temp_{timestamp}"
+            download_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 1. 首先pull获取notebook
+            try:
+                # 下载notebook到指定目录
+                api.kernels_pull(notebook_path, path=str(download_dir))
+                
+                if event:
+                    await event.send(event.plain_result("✅ Notebook下载完成"))
+                    
+                # 检查下载的文件
+                downloaded_files = list(download_dir.glob('*'))
+                if not downloaded_files:
+                    if event:
+                        await event.send(event.plain_result("❌ 下载的文件为空"))
                     shutil.rmtree(download_dir, ignore_errors=True)
                     return None
-            else:
-                # 使用目录路径
-                result = api.kernels_push(str(download_dir))
-            
-            # 处理运行结果...
-            # ... 后面的代码保持不变 ...
-            
-        except Exception as run_error:
-            error_msg = str(run_error)
-            
-            # 更详细的错误处理
-            if "Invalid folder" in error_msg:
+                    
                 if event:
-                    await event.send(event.plain_result("❌ 目录结构无效，尝试替代方法..."))
+                    await event.send(event.plain_result(f"📄 下载的文件: {[f.name for f in downloaded_files]}"))
+                    
+            except Exception as pull_error:
+                if event:
+                    await event.send(event.plain_result(f"❌ 下载notebook失败: {str(pull_error)}"))
+                shutil.rmtree(download_dir, ignore_errors=True)
+                return None
+            
+            if event:
+                await event.send(event.plain_result("🚀 开始运行notebook..."))
+            
+            # 2. 关键修复：确保目录结构正确
+            try:
+                # 检查目录结构，Kaggle API可能期望特定的结构
+                kernel_metadata_file = download_dir / "kernel-metadata.json"
                 
-                # 尝试替代方法：直接使用notebook文件
-                notebook_file = None
-                for file in download_dir.glob('*.ipynb'):
-                    notebook_file = file
-                    break
-                
-                if notebook_file:
-                    try:
+                # 如果没有metadata文件，尝试创建或使用其他方法
+                if not kernel_metadata_file.exists():
+                    if event:
+                        await event.send(event.plain_result("⚠️ 未找到kernel-metadata.json，尝试直接运行..."))
+                    
+                    # 尝试直接使用文件路径而不是目录
+                    notebook_file = None
+                    for file in download_dir.glob('*.ipynb'):
+                        notebook_file = file
+                        break
+                    
+                    if not notebook_file:
+                        for file in download_dir.glob('*.py'):
+                            notebook_file = file
+                            break
+                    
+                    if notebook_file:
+                        # 使用文件路径而不是目录
                         result = api.kernels_push(str(notebook_file))
-                        if result and hasattr(result, 'status') and getattr(result, 'status') == 'ok':
-                            # 成功运行，继续处理输出
-                            if event:
-                                await event.send(event.plain_result("✅ 运行完成，等待输出文件生成..."))
-                            
-                            await asyncio.sleep(20)
-                            zip_path = await self.download_and_package_output(notebook_path, notebook_name)
-                            
-                            shutil.rmtree(download_dir, ignore_errors=True)
-                            if event:
-                                session_id = getattr(event, 'session_id', 'default')
-                                if session_id in self.running_notebooks:
-                                    del self.running_notebooks[session_id]
-                            
-                            return zip_path
-                    except Exception as alt_error:
+                    else:
                         if event:
-                            await event.send(event.plain_result(f"❌ 替代方法也失败: {str(alt_error)}"))
+                            await event.send(event.plain_result("❌ 未找到有效的notebook文件"))
+                        shutil.rmtree(download_dir, ignore_errors=True)
+                        return None
+                else:
+                    # 使用目录路径
+                    result = api.kernels_push(str(download_dir))
                 
-                if event:
-                    await event.send(event.plain_result("💡 提示: 可能需要手动检查notebook文件格式"))
-            
-            # ... 其他错误处理保持不变 ...
+                if result and hasattr(result, 'status') and getattr(result, 'status') == 'ok':
+                    if event:
+                        await event.send(event.plain_result("✅ 运行完成，等待输出文件生成..."))
+                    
+                    # 等待更长时间让notebook完成运行
+                    await asyncio.sleep(20)
+                    
+                    # 3. 下载输出文件
+                    zip_path = await self.download_and_package_output(notebook_path, notebook_name)
+                    
+                    # 清理下载目录
+                    try:
+                        shutil.rmtree(download_dir, ignore_errors=True)
+                    except:
+                        pass
+                    
+                    # 清理运行记录
+                    if event:
+                        session_id = getattr(event, 'session_id', 'default')
+                        if session_id in self.running_notebooks:
+                            del self.running_notebooks[session_id]
+                    
+                    if zip_path:
+                        return zip_path
+                    else:
+                        if event:
+                            await event.send(event.plain_result("⚠️ 运行完成但未找到输出文件"))
+                        return None
+                else:
+                    error_msg = getattr(result, 'error', '未知错误') if result else '无响应'
+                    if event:
+                        await event.send(event.plain_result(f"❌ 运行失败: {error_msg}"))
+                    
+                    # 清理下载目录
+                    try:
+                        shutil.rmtree(download_dir, ignore_errors=True)
+                    except:
+                        pass
+                        
+                    return None
+                    
+            except Exception as run_error:
+                error_msg = str(run_error)
+                
+                # 更详细的错误处理
+                if "Invalid folder" in error_msg:
+                    if event:
+                        await event.send(event.plain_result("❌ 目录结构无效，尝试替代方法..."))
+                    
+                    # 尝试替代方法：直接使用notebook文件
+                    notebook_file = None
+                    for file in download_dir.glob('*.ipynb'):
+                        notebook_file = file
+                        break
+                    
+                    if notebook_file:
+                        try:
+                            result = api.kernels_push(str(notebook_file))
+                            if result and hasattr(result, 'status') and getattr(result, 'status') == 'ok':
+                                if event:
+                                    await event.send(event.plain_result("✅ 运行完成，等待输出文件生成..."))
+                                
+                                await asyncio.sleep(20)
+                                zip_path = await self.download_and_package_output(notebook_path, notebook_name)
+                                
+                                shutil.rmtree(download_dir, ignore_errors=True)
+                                if event:
+                                    session_id = getattr(event, 'session_id', 'default')
+                                    if session_id in self.running_notebooks:
+                                        del self.running_notebooks[session_id]
+                                
+                                return zip_path
+                        except Exception as alt_error:
+                            if event:
+                                await event.send(event.plain_result(f"❌ 替代方法也失败: {str(alt_error)}"))
+                    
+                    if event:
+                        await event.send(event.plain_result("💡 提示: 可能需要手动检查notebook文件格式"))
+                
+                elif "already running" in error_msg.lower():
+                    if event:
+                        await event.send(event.plain_result("⚠️ Notebook已经在运行中，等待完成..."))
+                    # 等待并尝试获取输出
+                    await asyncio.sleep(30)
+                    zip_path = await self.download_and_package_output(notebook_path, notebook_name)
+                    return zip_path
+                else:
+                    if event:
+                        await event.send(event.plain_result(f"❌ 运行过程中出错: {error_msg}"))
+                
+                # 清理下载目录
+                try:
+                    shutil.rmtree(download_dir, ignore_errors=True)
+                except:
+                    pass
+                    
+                return None
+                
+        except Exception as e:
+            logger.error(f"运行Notebook失败: {e}")
+            if event:
+                session_id = getattr(event, 'session_id', 'default')
+                if session_id in self.running_notebooks:
+                    del self.running_notebooks[session_id]
+                await event.send(event.plain_result(f"❌ 运行失败: {str(e)}"))
+            return None
 
     def is_admin_user(self, user_id: str) -> bool:
         """检查用户是否是管理员"""
