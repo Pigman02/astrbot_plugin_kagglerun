@@ -293,7 +293,7 @@ class KagglePlugin(Star):
             if event:
                 await event.send(event.plain_result("📥 正在下载notebook..."))
             
-            # 创建下载目录 - 使用更简单的命名
+            # 创建下载目录
             timestamp = datetime.now().strftime("%H%M%S")
             download_dir = self.downloads_dir / f"temp_{timestamp}"
             download_dir.mkdir(parents=True, exist_ok=True)
@@ -307,15 +307,15 @@ class KagglePlugin(Star):
                     await event.send(event.plain_result("✅ Notebook下载完成"))
                     
                 # 检查下载的文件
-                downloaded_files = list(download_dir.glob('*'))
-                if not downloaded_files:
+                downloaded_items = list(download_dir.iterdir())
+                if not downloaded_items:
                     if event:
                         await event.send(event.plain_result("❌ 下载的文件为空"))
                     shutil.rmtree(download_dir, ignore_errors=True)
                     return None
                     
                 if event:
-                    await event.send(event.plain_result(f"📄 下载的文件: {[f.name for f in downloaded_files]}"))
+                    await event.send(event.plain_result(f"📄 下载的内容: {[f.name for f in downloaded_items]}"))
                     
             except Exception as pull_error:
                 if event:
@@ -326,38 +326,21 @@ class KagglePlugin(Star):
             if event:
                 await event.send(event.plain_result("🚀 开始运行notebook..."))
             
-            # 2. 关键修复：确保目录结构正确
+            # 2. 关键修复：确定正确的push路径
+            push_path = download_dir
+            
+            # 检查pull创建的目录结构
+            downloaded_items = list(download_dir.iterdir())
+            if len(downloaded_items) == 1 and downloaded_items[0].is_dir():
+                # 如果pull创建了子目录，使用子目录路径
+                push_path = downloaded_items[0]
+                logger.info(f"使用子目录路径进行push: {push_path}")
+                if event:
+                    await event.send(event.plain_result(f"📁 检测到子目录结构，使用: {push_path.name}"))
+            
             try:
-                # 检查目录结构，Kaggle API可能期望特定的结构
-                kernel_metadata_file = download_dir / "kernel-metadata.json"
-                
-                # 如果没有metadata文件，尝试创建或使用其他方法
-                if not kernel_metadata_file.exists():
-                    if event:
-                        await event.send(event.plain_result("⚠️ 未找到kernel-metadata.json，尝试直接运行..."))
-                    
-                    # 尝试直接使用文件路径而不是目录
-                    notebook_file = None
-                    for file in download_dir.glob('*.ipynb'):
-                        notebook_file = file
-                        break
-                    
-                    if not notebook_file:
-                        for file in download_dir.glob('*.py'):
-                            notebook_file = file
-                            break
-                    
-                    if notebook_file:
-                        # 使用文件路径而不是目录
-                        result = api.kernels_push(str(notebook_file))
-                    else:
-                        if event:
-                            await event.send(event.plain_result("❌ 未找到有效的notebook文件"))
-                        shutil.rmtree(download_dir, ignore_errors=True)
-                        return None
-                else:
-                    # 使用目录路径
-                    result = api.kernels_push(str(download_dir))
+                # 使用正确的路径进行push
+                result = api.kernels_push(str(push_path))
                 
                 if result and hasattr(result, 'status') and getattr(result, 'status') == 'ok':
                     if event:
@@ -404,40 +387,16 @@ class KagglePlugin(Star):
                 error_msg = str(run_error)
                 
                 # 更详细的错误处理
-                if "Invalid folder" in error_msg:
+                if "Invalid folder" in error_msg or "kernel-metadata.json" in error_msg:
                     if event:
-                        await event.send(event.plain_result("❌ 目录结构无效，尝试替代方法..."))
+                        await event.send(event.plain_result("❌ 目录结构无效，尝试检查metadata文件..."))
                     
-                    # 尝试替代方法：直接使用notebook文件
-                    notebook_file = None
-                    for file in download_dir.glob('*.ipynb'):
-                        notebook_file = file
-                        break
+                    # 检查metadata文件是否存在
+                    metadata_files = list(push_path.glob('kernel-metadata.json'))
+                    if not metadata_files:
+                        if event:
+                            await event.send(event.plain_result("❌ 缺少kernel-metadata.json文件"))
                     
-                    if notebook_file:
-                        try:
-                            result = api.kernels_push(str(notebook_file))
-                            if result and hasattr(result, 'status') and getattr(result, 'status') == 'ok':
-                                if event:
-                                    await event.send(event.plain_result("✅ 运行完成，等待输出文件生成..."))
-                                
-                                await asyncio.sleep(20)
-                                zip_path = await self.download_and_package_output(notebook_path, notebook_name)
-                                
-                                shutil.rmtree(download_dir, ignore_errors=True)
-                                if event:
-                                    session_id = getattr(event, 'session_id', 'default')
-                                    if session_id in self.running_notebooks:
-                                        del self.running_notebooks[session_id]
-                                
-                                return zip_path
-                        except Exception as alt_error:
-                            if event:
-                                await event.send(event.plain_result(f"❌ 替代方法也失败: {str(alt_error)}"))
-                    
-                    if event:
-                        await event.send(event.plain_result("💡 提示: 可能需要手动检查notebook文件格式"))
-                
                 elif "already running" in error_msg.lower():
                     if event:
                         await event.send(event.plain_result("⚠️ Notebook已经在运行中，等待完成..."))
