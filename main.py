@@ -17,9 +17,14 @@ class KagglePlugin(Star):
         self.config = config
         self.active_sessions: Dict[str, datetime] = {}
         self.running_notebooks: Dict[str, str] = {}
-        self.notebooks_file = Path("data/kaggle_notebooks.json")
+        
+        # 所有数据存储在data目录下
+        self.data_dir = Path("data/kaggle_plugin")
+        self.notebooks_file = self.data_dir / "kaggle_notebooks.json"
+        self.output_dir = self.data_dir / "outputs"
+        self.downloads_dir = self.data_dir / "downloads"
+        
         self.notebooks: Dict[str, str] = {}
-        self.output_dir = Path(self.config.output_dir)
         self.cleanup_task = None
         
         # 初始化
@@ -29,12 +34,14 @@ class KagglePlugin(Star):
         self.start_cleanup_task()
 
     def setup_directories(self):
-        """设置输出目录"""
+        """设置所有必要的目录"""
         try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
             self.output_dir.mkdir(parents=True, exist_ok=True)
-            logger.info(f"输出目录设置完成: {self.output_dir}")
+            self.downloads_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"数据目录设置完成: {self.data_dir}")
         except Exception as e:
-            logger.error(f"设置输出目录失败: {e}")
+            logger.error(f"设置目录失败: {e}")
 
     def setup_kaggle_api(self):
         """设置Kaggle API配置"""
@@ -102,7 +109,6 @@ class KagglePlugin(Star):
     def save_notebooks(self):
         """保存notebook列表"""
         try:
-            self.notebooks_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.notebooks_file, 'w', encoding='utf-8') as f:
                 json.dump(self.notebooks, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -167,7 +173,7 @@ class KagglePlugin(Star):
             api.authenticate()
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_name = f"{timestamp}_{notebook_name}"
+            output_name = f"{timestamp}_{notebook_name.replace(' ', '_')}"
             
             if '/' not in notebook_path:
                 logger.error(f"Invalid notebook path: {notebook_path}")
@@ -176,7 +182,7 @@ class KagglePlugin(Star):
             username, slug = notebook_path.split('/', 1)
             
             # 创建临时目录
-            temp_dir = self.output_dir / "temp" / output_name
+            temp_dir = self.downloads_dir / output_name
             temp_dir.mkdir(parents=True, exist_ok=True)
             
             logger.info(f"Downloading output for: {username}/{slug} to {temp_dir}")
@@ -287,23 +293,24 @@ class KagglePlugin(Star):
             if event:
                 await event.send(event.plain_result("📥 正在下载notebook..."))
             
+            # 创建下载目录
+            download_dir = self.downloads_dir / f"temp_{notebook_name.replace(' ', '_')}_{datetime.now().strftime('%H%M%S')}"
+            download_dir.mkdir(parents=True, exist_ok=True)
+            
             # 1. 首先pull获取notebook
             try:
-                import tempfile
-                temp_dir = Path(tempfile.mkdtemp(prefix="kaggle_"))
-                
-                # 下载notebook到临时目录
-                api.kernels_pull(notebook_path, path=str(temp_dir))
+                # 下载notebook到指定目录
+                api.kernels_pull(notebook_path, path=str(download_dir))
                 
                 if event:
                     await event.send(event.plain_result("✅ Notebook下载完成"))
                     
                 # 检查下载的文件
-                downloaded_files = list(temp_dir.glob('*'))
+                downloaded_files = list(download_dir.glob('*'))
                 if not downloaded_files:
                     if event:
                         await event.send(event.plain_result("❌ 下载的文件为空"))
-                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    shutil.rmtree(download_dir, ignore_errors=True)
                     return None
                     
                 if event:
@@ -312,16 +319,17 @@ class KagglePlugin(Star):
             except Exception as pull_error:
                 if event:
                     await event.send(event.plain_result(f"❌ 下载notebook失败: {str(pull_error)}"))
+                shutil.rmtree(download_dir, ignore_errors=True)
                 return None
             
             if event:
                 await event.send(event.plain_result("🚀 开始运行notebook..."))
             
-            # 2. 关键修复：正确使用下载的目录进行push
+            # 2. 关键修复：使用下载的目录进行push
             try:
                 # 获取下载的notebook文件路径
                 notebook_file = None
-                for file in temp_dir.glob('*'):
+                for file in download_dir.glob('*'):
                     if file.suffix in ['.ipynb', '.py']:
                         notebook_file = file
                         break
@@ -329,11 +337,11 @@ class KagglePlugin(Star):
                 if not notebook_file:
                     if event:
                         await event.send(event.plain_result("❌ 未找到notebook文件 (.ipynb 或 .py)"))
-                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    shutil.rmtree(download_dir, ignore_errors=True)
                     return None
                 
                 # 关键修复：使用包含notebook文件的目录路径
-                result = api.kernels_push(str(temp_dir))
+                result = api.kernels_push(str(download_dir))
                 
                 if result and hasattr(result, 'status') and getattr(result, 'status') == 'ok':
                     if event:
@@ -345,9 +353,9 @@ class KagglePlugin(Star):
                     # 3. 下载输出文件
                     zip_path = await self.download_and_package_output(notebook_path, notebook_name)
                     
-                    # 清理临时目录
+                    # 清理下载目录
                     try:
-                        shutil.rmtree(temp_dir, ignore_errors=True)
+                        shutil.rmtree(download_dir, ignore_errors=True)
                     except:
                         pass
                     
@@ -368,9 +376,9 @@ class KagglePlugin(Star):
                     if event:
                         await event.send(event.plain_result(f"❌ 运行失败: {error_msg}"))
                     
-                    # 清理临时目录
+                    # 清理下载目录
                     try:
-                        shutil.rmtree(temp_dir, ignore_errors=True)
+                        shutil.rmtree(download_dir, ignore_errors=True)
                     except:
                         pass
                         
@@ -393,9 +401,9 @@ class KagglePlugin(Star):
                     if event:
                         await event.send(event.plain_result(f"❌ 运行过程中出错: {error_msg}"))
                 
-                # 清理临时目录
+                # 清理下载目录
                 try:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    shutil.rmtree(download_dir, ignore_errors=True)
                 except:
                     pass
                     
