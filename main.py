@@ -12,6 +12,20 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 
 class KagglePlugin(Star):
+    def get_kaggle_api(self):
+        """统一获取 KaggleApi 实例并认证"""
+        try:
+            from kaggle.api.kaggle_api_extended import KaggleApi
+        except ImportError as e:
+            logger.error(f"未安装kaggle库: {e}")
+            raise
+        api = KaggleApi()
+        try:
+            api.authenticate()
+        except Exception as e:
+            logger.error(f"Kaggle API认证失败: {e}")
+            raise
+        return api
     # 可在 config 里配置 kaggle_datasets: List[str]
     def __init__(self, context: Context, config):
         super().__init__(context)
@@ -142,16 +156,10 @@ class KagglePlugin(Star):
     async def stop_kaggle_notebook(self, notebook_path: str) -> bool:
         """强制停止运行的notebook"""
         try:
-            from kaggle.api.kaggle_api_extended import KaggleApi
-            api = KaggleApi()
-            api.authenticate()
-            
+            api = self.get_kaggle_api()
             if '/' not in notebook_path:
                 return False
-            
             username, slug = notebook_path.split('/', 1)
-            
-            # 获取运行中的kernels并停止匹配的
             kernels = api.kernels_list()
             for kernel in kernels:
                 kernel_ref = getattr(kernel, 'ref', '')
@@ -160,7 +168,6 @@ class KagglePlugin(Star):
                     if kernel_id:
                         api.kernels_stop(kernel_id)
                         return True
-            
             return False
         except Exception as e:
             logger.error(f"停止notebook失败: {e}")
@@ -170,65 +177,45 @@ class KagglePlugin(Star):
         """下载并打包输出文件"""
         temp_dir = None
         try:
-            from kaggle.api.kaggle_api_extended import KaggleApi
-            api = KaggleApi()
-            api.authenticate()
-            
+            api = self.get_kaggle_api()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_name = f"{timestamp}_{notebook_name}"
-            
             if '/' not in notebook_path:
                 logger.error(f"Invalid notebook path: {notebook_path}")
                 return None
-            
             username, slug = notebook_path.split('/', 1)
-            
-            # 创建临时目录
             temp_dir = self.output_dir / "temp" / output_name
             temp_dir.mkdir(parents=True, exist_ok=True)
-            
             logger.info(f"Downloading output for: {username}/{slug} to {temp_dir}")
-            
-            # 下载输出文件
             try:
                 api.kernels_output(f"{username}/{slug}", path=str(temp_dir))
                 logger.info(f"成功下载输出文件到: {temp_dir}")
             except Exception as e:
                 logger.warning(f"kernels_output failed: {e}, trying alternative approach...")
-                # 尝试其他方法获取输出
                 try:
                     api.kernel_output(f"{username}/{slug}", path=str(temp_dir))
                     logger.info(f"通过备用方法成功下载输出文件到: {temp_dir}")
                 except Exception as e2:
                     logger.error(f"All output download methods failed: {e2}")
                     return None
-            
-            # 检查是否有文件下载
             files = list(temp_dir.glob('*'))
             logger.info(f"Found {len(files)} output files: {[f.name for f in files]}")
-            
             if not files:
                 logger.warning(f"没有找到输出文件: {notebook_path}")
                 return None
-            
-            # 创建ZIP文件
             zip_filename = f"{output_name}.zip"
             zip_path = self.output_dir / zip_filename
-            
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file in temp_dir.rglob('*'):
                     if file.is_file():
                         arcname = file.relative_to(temp_dir)
                         zipf.write(file, arcname)
-            
             logger.info(f"Output packaged: {zip_path}")
             return zip_path
-            
         except Exception as e:
             logger.error(f"打包输出文件失败: {e}")
             return None
         finally:
-            # 确保清理临时目录
             if temp_dir and temp_dir.exists():
                 try:
                     shutil.rmtree(temp_dir, ignore_errors=True)
@@ -239,16 +226,10 @@ class KagglePlugin(Star):
     def validate_notebook_path(self, notebook_path: str) -> bool:
         """验证notebook路径是否有效"""
         try:
-            from kaggle.api.kaggle_api_extended import KaggleApi
-            api = KaggleApi()
-            api.authenticate()
-            
-            # 检查路径格式
+            api = self.get_kaggle_api()
             if '/' not in notebook_path:
                 logger.error(f"Notebook路径格式错误: {notebook_path}")
                 return False
-            
-            # 尝试获取notebook状态来验证
             status = api.kernels_status(notebook_path)
             if status:
                 logger.info(f"Notebook验证成功: {notebook_path}")
@@ -256,7 +237,6 @@ class KagglePlugin(Star):
             else:
                 logger.error(f"Notebook验证失败，返回空状态: {notebook_path}")
                 return False
-            
         except Exception as e:
             logger.error(f"验证notebook路径失败: {e}")
             return False
@@ -265,9 +245,7 @@ class KagglePlugin(Star):
         """运行notebook并返回输出文件路径 - 修复路径问题"""
         temp_dir = None
         try:
-            from kaggle.api.kaggle_api_extended import KaggleApi
-            api = KaggleApi()
-            api.authenticate()
+            api = self.get_kaggle_api()
             
             if event:
                 await event.send(event.plain_result("🔍 验证notebook是否存在..."))
@@ -371,10 +349,10 @@ class KagglePlugin(Star):
                     logger.error(f"未找到有效的notebook文件: {temp_dir}")
                     return None
 
-                # 自动生成 kernel-metadata.json，优先获取原notebook的datasets依赖
+                # 优化 kernel-metadata.json 生成
                 username, slug = notebook_path.split('/', 1)
                 metadata_path = temp_dir / "kernel-metadata.json"
-                # 每次都强制覆盖写入 metadata
+                # 字段顺序更合理，支持自定义额外字段
                 metadata = {
                     "id": f"{username}/{slug}",
                     "title": slug,
@@ -383,8 +361,8 @@ class KagglePlugin(Star):
                     "kernel_type": "notebook",
                     "is_private": False
                 }
-                # 优先获取原notebook的datasets依赖
-                dataset_refs = []
+                # 获取原notebook的datasets依赖
+                dataset_refs = set()
                 try:
                     kernel_info = api.kernels_view(notebook_path)
                     logger.info(f"kernels_view返回: {kernel_info}")
@@ -400,35 +378,50 @@ class KagglePlugin(Star):
                         else:
                             ref = getattr(ds, 'ref', None) or (f"{getattr(ds, 'ownerSlug', '')}/{getattr(ds, 'datasetSlug', '')}")
                         if ref and '/' in ref:
-                            dataset_refs.append(ref)
+                            dataset_refs.add(ref)
                     logger.info(f"最终dataset_refs: {dataset_refs}")
                 except Exception as e:
                     logger.warning(f"获取notebook依赖datasets失败: {e}")
-                    dataset_refs = []
-                # 无论dataset_refs是否为空都写入，便于调试
-                metadata["datasets"] = dataset_refs
                 # 若dataset_refs为空，兼容用户自定义
                 if not dataset_refs:
-                    datasets = getattr(self.config, 'kaggle_datasets', None)
-                    if datasets and isinstance(datasets, list):
-                        metadata["datasets"] = datasets
-                        logger.info(f"使用config.kaggle_datasets: {datasets}")
+                    config_datasets = getattr(self.config, 'kaggle_datasets', None)
+                    if config_datasets and isinstance(config_datasets, list):
+                        dataset_refs.update(config_datasets)
+                        logger.info(f"使用config.kaggle_datasets: {config_datasets}")
+                # datasets字段始终为非空list
+                metadata["datasets"] = list(dataset_refs)
+                # 支持自定义额外字段
+                extra_metadata = getattr(self.config, 'kaggle_extra_metadata', None)
+                if extra_metadata and isinstance(extra_metadata, dict):
+                    metadata.update(extra_metadata)
                 with open(metadata_path, "w", encoding="utf-8") as f:
-                    json.dump(metadata, f, indent=2)
+                    json.dump(metadata, f, indent=2, ensure_ascii=False)
                 logger.info(f"最终写入kernel-metadata.json内容: {metadata}")
 
                 # 使用绝对路径确保正确性
                 abs_temp_dir = temp_dir.resolve()
                 logger.info(f"准备运行notebook，目录: {abs_temp_dir}")
                 result = api.kernels_push(str(abs_temp_dir))
-                # Kaggle API 返回 dict 或对象，status=='ok' 为成功
+                # Kaggle API 有时返回 None 但实际已成功，需兼容这种情况
                 status_ok = False
-                if result:
-                    # 兼容对象和dict
-                    if isinstance(result, dict):
-                        status_ok = result.get('status') == 'ok'
+                # 只要没有抛异常且没有明确 error 字段就认为成功
+                if result is None:
+                    status_ok = True
+                elif isinstance(result, dict):
+                    if result.get('status') == 'ok':
+                        status_ok = True
+                    elif result.get('error'):
+                        status_ok = False
                     else:
-                        status_ok = hasattr(result, 'status') and getattr(result, 'status') == 'ok'
+                        # 没有 error 字段也视为成功
+                        status_ok = True
+                else:
+                    if hasattr(result, 'status') and getattr(result, 'status') == 'ok':
+                        status_ok = True
+                    elif hasattr(result, 'error') and getattr(result, 'error'):
+                        status_ok = False
+                    else:
+                        status_ok = True
 
                 if status_ok:
                     if event:
@@ -554,11 +547,7 @@ class KagglePlugin(Star):
     async def kaggle_test(self, event: AstrMessageEvent):
         """测试Kaggle API连接"""
         try:
-            from kaggle.api.kaggle_api_extended import KaggleApi
-            api = KaggleApi()
-            api.authenticate()
-            
-            # 测试列出notebooks
+            api = self.get_kaggle_api()
             kernels = api.kernels_list(page_size=5)
             if kernels:
                 yield event.plain_result("✅ Kaggle API连接正常")
@@ -566,7 +555,6 @@ class KagglePlugin(Star):
             else:
                 yield event.plain_result("⚠️ API连接正常但未找到notebooks")
                 logger.warning("Kaggle API连接正常但未找到notebooks")
-                
         except Exception as e:
             yield event.plain_result(f"❌ API连接失败: {str(e)}")
             logger.error(f"Kaggle API连接测试失败: {e}")
@@ -575,32 +563,22 @@ class KagglePlugin(Star):
     async def kaggle_check(self, event: AstrMessageEvent, path: str):
         """检查notebook状态"""
         try:
-            from kaggle.api.kaggle_api_extended import KaggleApi
-            api = KaggleApi()
-            api.authenticate()
-            
+            api = self.get_kaggle_api()
             yield event.plain_result(f"🔍 检查notebook: {path}")
             logger.info(f"检查notebook状态: {path}")
-            
-            # 首先检查路径格式
             if '/' not in path:
                 yield event.plain_result("❌ Notebook路径格式错误，应为: username/slug")
                 logger.error(f"Notebook路径格式错误: {path}")
                 return
-            
-            # 检查notebook状态
             status = api.kernels_status(path)
             status_str = getattr(status, 'status', 'unknown')
             run_count = getattr(status, 'totalRunCount', 0)
             votes = getattr(status, 'totalVotes', 0)
-            
             yield event.plain_result(f"📊 状态: {status_str}")
             yield event.plain_result(f"📈 运行次数: {run_count}")
             yield event.plain_result(f"⭐ 投票数: {votes}")
             yield event.plain_result(f"🔗 链接: https://www.kaggle.com/{path}")
-            
             logger.info(f"Notebook {path} 状态: {status_str}, 运行次数: {run_count}, 投票数: {votes}")
-            
         except Exception as e:
             logger.error(f"检查notebook状态失败: {e}")
             if "Not Found" in str(e) or "404" in str(e):
@@ -657,13 +635,8 @@ class KagglePlugin(Star):
         logger.info(f"验证notebook路径: {path}")
         
         try:
-            from kaggle.api.kaggle_api_extended import KaggleApi
-            api = KaggleApi()
-            api.authenticate()
-            
-            # 尝试获取notebook信息来验证
+            api = self.get_kaggle_api()
             status = api.kernels_status(path)
-            
             if status:
                 self.notebooks[name] = path
                 self.save_notebooks()
@@ -673,7 +646,6 @@ class KagglePlugin(Star):
             else:
                 yield event.plain_result(f"❌ Notebook验证失败: {path}")
                 logger.error(f"Notebook验证失败: {path}")
-                
         except Exception as e:
             logger.error(f"添加notebook失败: {e}")
             if "Not Found" in str(e) or "404" in str(e):
