@@ -364,8 +364,8 @@ class KagglePlugin(Star):
                 # 获取原notebook的datasets依赖
                 dataset_refs = set()
                 try:
-                    kernel_info = api.kernels_view(notebook_path)
-                    logger.info(f"kernels_view返回: {kernel_info}")
+                    kernel_info = api.kernel_view(notebook_path)
+                    logger.info(f"kernel_view返回: {kernel_info}")
                     datasets = []
                     if hasattr(kernel_info, 'datasets'):
                         datasets = getattr(kernel_info, 'datasets', [])
