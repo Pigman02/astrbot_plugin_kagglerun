@@ -312,10 +312,12 @@ class KagglePlugin(Star):
                 with open(metadata_path, "r", encoding="utf-8") as f:
                     metadata = json.load(f)
                 metadata["code_file"] = notebook_file.name
+                # 自动修正 language 字段为 python
+                metadata["language"] = "python"
                 with open(metadata_path, "w", encoding="utf-8") as f:
                     json.dump(metadata, f, indent=2, ensure_ascii=False)
                 if event:
-                    await event.send(event.plain_result(f"📝 已修正kernel-metadata.json code_file: {notebook_file.name}"))
+                    await event.send(event.plain_result(f"📝 已修正kernel-metadata.json code_file: {notebook_file.name}, language: python"))
             # 4. push notebook
             result = api.kernels_push(str(temp_dir))
             status_ok = False
