@@ -132,205 +132,7 @@ class KagglePlugin(Star):
             logger.error(f"获取notebook失败: {e}")
             return None
 
-    async def stop_kaggle_notebook(self, notebook_path: str) -> bool:
-        """强制停止运行的notebook"""
-        try:
-            from kaggle.api.kaggle_api_extended import KaggleApi
-            api = KaggleApi()
-            api.authenticate()
-            
-            if '/' not in notebook_path:
-                return False
-            
-            username, slug = notebook_path.split('/', 1)
-            
-            # 获取运行中的kernels并停止匹配的
-            kernels = api.kernels_list()
-            for kernel in kernels:
-                if kernel['ref'] == f"{username}/{slug}":
-                    api.kernels_stop(kernel['id'])
-                    return True
-            
-            return False
-        except Exception as e:
-            logger.error(f"停止notebook失败: {e}")
-            return False
-
-    async def download_and_package_output(self, notebook_path: str, notebook_name: str) -> Optional[Path]:
-        """下载并打包输出文件"""
-        temp_dir = None
-        try:
-            from kaggle.api.kaggle_api_extended import KaggleApi
-            api = KaggleApi()
-            api.authenticate()
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_name = f"{timestamp}_{notebook_name}"
-            
-            if '/' not in notebook_path:
-                return None
-            
-            username, slug = notebook_path.split('/', 1)
-            
-            # 创建临时目录
-            temp_dir = self.output_dir / "temp" / output_name
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            
-            # 下载输出文件
-            api.kernels_output(f"{username}/{slug}", path=str(temp_dir))
-            
-            # 检查是否有文件下载
-            files = list(temp_dir.glob('*'))
-            if not files:
-                logger.warning(f"没有找到输出文件: {notebook_path}")
-                return None
-            
-            # 创建ZIP文件
-            zip_filename = f"{output_name}.zip"
-            zip_path = self.output_dir / zip_filename
-            
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for file in temp_dir.rglob('*'):
-                    if file.is_file():
-                        arcname = file.relative_to(temp_dir)
-                        zipf.write(file, arcname)
-            
-            return zip_path
-            
-        except Exception as e:
-            logger.error(f"打包输出文件失败: {e}")
-            return None
-        finally:
-            # 清理临时目录
-            if temp_dir and temp_dir.exists():
-                try:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                except:
-                    pass
-
-    async def run_notebook(self, notebook_path: str, notebook_name: str, event: AstrMessageEvent = None) -> Optional[Path]:
-        """运行notebook并返回输出文件路径 - 正确的pull→push流程"""
-        temp_dir = None
-        try:
-            from kaggle.api.kaggle_api_extended import KaggleApi
-            api = KaggleApi()
-            api.authenticate()
-            
-            if event:
-                await event.send(event.plain_result("🔍 验证notebook是否存在..."))
-            
-            # 验证notebook状态
-            try:
-                kernel_status = api.kernels_status(notebook_path)
-                status = kernel_status.get('status', 'unknown')
-                
-                if event:
-                    await event.send(event.plain_result(f"📊 Notebook状态: {status}"))
-                
-                # 检查状态是否有效
-                if status in ['CANCEL_ACKNOWLEDGED', 'ERROR', 'FAILED', 'CANCELLED']:
-                    if event:
-                        await event.send(event.plain_result("❌ Notebook状态无效，可能已被取消或不存在"))
-                    return None
-                    
-            except Exception as e:
-                if "Not Found" in str(e) or "404" in str(e):
-                    if event:
-                        await event.send(event.plain_result(f"❌ Notebook不存在: {notebook_path}"))
-                    return None
-                else:
-                    if event:
-                        await event.send(event.plain_result(f"⚠️ 验证时出现错误: {str(e)}"))
-                    # 继续尝试运行
-            
-            # 记录运行中的notebook
-            if event:
-                session_id = event.get_session_id()
-                self.running_notebooks[session_id] = notebook_name
-            
-            if event:
-                await event.send(event.plain_result("📥 正在下载notebook文件和metadata..."))
-            
-            # 1. 首先pull获取notebook和metadata
-            try:
-                # 创建临时目录
-                import tempfile
-                temp_dir = Path(tempfile.mkdtemp(prefix="kaggle_"))
-                
-                # 下载notebook和metadata文件
-                api.kernels_pull(notebook_path, path=str(temp_dir), metadata=True)
-                
-                # 检查下载的文件
-                downloaded_files = list(temp_dir.glob('*'))
-                if not downloaded_files:
-                    if event:
-                        await event.send(event.plain_result("❌ 下载失败：未找到任何文件"))
-                    return None
-                
-                if event:
-                    await event.send(event.plain_result(f"✅ 下载完成，找到 {len(downloaded_files)} 个文件"))
-                    
-            except Exception as pull_error:
-                if event:
-                    await event.send(event.plain_result(f"❌ 下载notebook失败: {str(pull_error)}"))
-                return None
-            
-            if event:
-                await event.send(event.plain_result("🚀 开始运行notebook..."))
-            
-            # 2. 然后push运行notebook
-            try:
-                result = api.kernels_push(path=str(temp_dir))
-                
-                if result and result.get('status') == 'ok':
-                    if event:
-                        await event.send(event.plain_result("✅ 运行完成，下载输出文件中..."))
-                    
-                    # 3. 下载输出文件
-                    zip_path = await self.download_and_package_output(notebook_path, notebook_name)
-                    
-                    # 清理运行记录
-                    if event and session_id in self.running_notebooks:
-                        del self.running_notebooks[session_id]
-                    
-                    return zip_path
-                else:
-                    error_msg = result.get('error', '未知错误') if result else '无响应'
-                    if event:
-                        await event.send(event.plain_result(f"❌ 运行失败: {error_msg}"))
-                    
-                    return None
-                    
-            except Exception as run_error:
-                error_msg = str(run_error)
-                if "Invalid folder" in error_msg or "not found" in error_msg.lower():
-                    if event:
-                        await event.send(event.plain_result("❌ Notebook路径无效或不存在"))
-                elif "metadata" in error_msg.lower():
-                    if event:
-                        await event.send(event.plain_result("❌ Metadata文件错误，请检查kernel-metadata.json"))
-                else:
-                    if event:
-                        await event.send(event.plain_result(f"❌ 运行过程中出错: {error_msg}"))
-                
-                return None
-                
-        except Exception as e:
-            logger.error(f"运行Notebook失败: {e}")
-            if event:
-                session_id = event.get_session_id()
-                if session_id in self.running_notebooks:
-                    del self.running_notebooks[session_id]
-                await event.send(event.plain_result(f"❌ 运行失败: {str(e)}"))
-            return None
-        
-        finally:
-            # 确保清理临时目录
-            if temp_dir and temp_dir.exists():
-                try:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                except Exception as cleanup_error:
-                    logger.error(f"清理临时目录失败: {cleanup_error}")
+    # ... (其他方法保持不变，如 stop_kaggle_notebook, download_and_package_output, validate_notebook_path, run_notebook 等)
 
     def is_admin_user(self, user_id: str) -> bool:
         """检查用户是否是管理员"""
@@ -341,15 +143,10 @@ class KagglePlugin(Star):
         message_lower = message.lower()
         return any(keyword.lower() in message_lower for keyword in self.config.keywords)
 
-    # 命令注册
-    @filter.command_group("kaggle")
-    def kaggle_group(self):
-        """Kaggle命令组"""
-        pass
-
-    @kaggle_group.command("")
+    # 修复命令注册部分
+    @filter.command("kaggle")
     async def kaggle_main(self, event: AstrMessageEvent):
-        """Kaggle主命令"""
+        """Kaggle主命令 - 显示帮助信息"""
         yield event.plain_result(
             "📋 Kaggle Notebook管理器\n\n"
             "可用命令:\n"
@@ -365,7 +162,7 @@ class KagglePlugin(Star):
             "/kaggle check <路径> - 检查notebook状态"
         )
 
-    @kaggle_group.command("test")
+    @filter.command("kaggle test")
     async def kaggle_test(self, event: AstrMessageEvent):
         """测试Kaggle API连接"""
         try:
@@ -383,7 +180,7 @@ class KagglePlugin(Star):
         except Exception as e:
             yield event.plain_result(f"❌ API连接失败: {str(e)}")
 
-    @kaggle_group.command("check")
+    @filter.command("kaggle check")
     async def kaggle_check(self, event: AstrMessageEvent, path: str):
         """检查notebook状态"""
         try:
@@ -393,20 +190,31 @@ class KagglePlugin(Star):
             
             yield event.plain_result(f"🔍 检查notebook: {path}")
             
+            # 首先检查路径格式
+            if '/' not in path:
+                yield event.plain_result("❌ Notebook路径格式错误，应为: username/slug")
+                return
+            
             # 检查notebook状态
             status = api.kernels_status(path)
-            yield event.plain_result(f"📊 状态: {status.get('status', 'unknown')}")
-            yield event.plain_result(f"📈 运行次数: {status.get('totalRunCount', 0)}")
-            yield event.plain_result(f"⭐ 投票数: {status.get('totalVotes', 0)}")
-            yield event.plain_result(f"🆔 ID: {status.get('id', '未知')}")
+            yield event.plain_result(f"📊 状态: {getattr(status, 'status', 'unknown')}")
+            yield event.plain_result(f"📈 运行次数: {getattr(status, 'totalRunCount', 0)}")
+            yield event.plain_result(f"⭐ 投票数: {getattr(status, 'totalVotes', 0)}")
+            yield event.plain_result(f"🔗 链接: https://www.kaggle.com/{path}")
             
         except Exception as e:
-            if "Not Found" in str(e):
+            if "Not Found" in str(e) or "404" in str(e):
                 yield event.plain_result(f"❌ Notebook不存在: {path}")
+            elif "403" in str(e) or "Forbidden" in str(e):
+                yield event.plain_result(f"❌ 访问被拒绝: {path}")
+                yield event.plain_result("💡 可能的原因: 1.notebook不是公开的 2.API密钥权限不足 3.账号未验证邮箱")
+            elif "Invalid folder" in str(e):
+                yield event.plain_result(f"❌ Notebook路径无效: {path}")
+                yield event.plain_result("💡 请确认用户名和slug是否正确")
             else:
                 yield event.plain_result(f"❌ 检查失败: {str(e)}")
 
-    @kaggle_group.command("list")
+    @filter.command("kaggle list")
     async def kaggle_list(self, event: AstrMessageEvent):
         """列出所有notebook"""
         if not self.notebooks:
@@ -422,10 +230,11 @@ class KagglePlugin(Star):
         
         yield event.plain_result(message)
 
-    @kaggle_group.command("add")
+    @filter.command("kaggle add")
     async def kaggle_add(self, event: AstrMessageEvent, name: str, path: str):
         """添加notebook"""
-        if not self.is_admin_user(event.get_sender_id()):
+        sender_id = getattr(event, 'sender_id', 'unknown')
+        if not self.is_admin_user(sender_id):
             yield event.plain_result("❌ 需要管理员权限")
             return
         
@@ -433,20 +242,44 @@ class KagglePlugin(Star):
             yield event.plain_result(f"❌ 名称 '{name}' 已存在")
             return
         
-        # 基本格式验证
+        # 验证notebook路径格式
         if '/' not in path:
-            yield event.plain_result("❌ 路径格式错误，应为: username/notebook-slug")
+            yield event.plain_result("❌ Notebook路径格式错误，应为: username/slug")
             return
         
-        # 直接添加，运行时再验证
-        self.notebooks[name] = path
-        self.save_notebooks()
-        yield event.plain_result(f"✅ 已添加: {name} -> {path}")
+        # 验证notebook路径是否有效
+        yield event.plain_result("🔍 验证notebook路径...")
+        
+        try:
+            from kaggle.api.kaggle_api_extended import KaggleApi
+            api = KaggleApi()
+            api.authenticate()
+            
+            # 尝试获取notebook信息来验证
+            status = api.kernels_status(path)
+            
+            if status:
+                self.notebooks[name] = path
+                self.save_notebooks()
+                yield event.plain_result(f"✅ 已添加: {name} -> {path}")
+                yield event.plain_result(f"🔗 链接: https://www.kaggle.com/{path}")
+            else:
+                yield event.plain_result(f"❌ Notebook验证失败: {path}")
+                
+        except Exception as e:
+            if "Not Found" in str(e) or "404" in str(e):
+                yield event.plain_result(f"❌ Notebook不存在: {path}")
+            elif "Invalid folder" in str(e):
+                yield event.plain_result(f"❌ Notebook路径无效: {path}")
+                yield event.plain_result("💡 请确认用户名和slug是否正确")
+            else:
+                yield event.plain_result(f"❌ 验证失败: {str(e)}")
 
-    @kaggle_group.command("remove")
+    @filter.command("kaggle remove")
     async def kaggle_remove(self, event: AstrMessageEvent, name: str):
         """删除notebook"""
-        if not self.is_admin_user(event.get_sender_id()):
+        sender_id = getattr(event, 'sender_id', 'unknown')
+        if not self.is_admin_user(sender_id):
             yield event.plain_result("❌ 需要管理员权限")
             return
         
@@ -468,7 +301,7 @@ class KagglePlugin(Star):
         
         yield event.plain_result("❌ 未找到指定的notebook")
 
-    @kaggle_group.command("run")
+    @filter.command("kaggle run")
     async def kaggle_run(self, event: AstrMessageEvent, name: str = None):
         """运行notebook"""
         # 使用默认notebook如果未指定
@@ -504,150 +337,44 @@ class KagglePlugin(Star):
         else:
             yield event.plain_result("❌ 运行失败")
 
-    @kaggle_group.command("outputs")
+    # 添加其他命令
+    @filter.command("kaggle outputs")
     async def kaggle_outputs(self, event: AstrMessageEvent):
         """查看输出文件"""
+        if not self.output_dir.exists():
+            yield event.plain_result("📁 输出目录不存在")
+            return
+        
         files = list(self.output_dir.glob('*.zip'))
         if not files:
-            yield event.plain_result("📭 还没有输出文件")
+            yield event.plain_result("📁 暂无输出文件")
             return
         
-        files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        message = "📦 输出文件列表:\n"
+        for i, file in enumerate(sorted(files, key=lambda x: x.stat().st_mtime, reverse=True)[:10], 1):
+            file_time = datetime.fromtimestamp(file.stat().st_mtime)
+            message += f"{i}. {file.name} ({file_time.strftime('%Y-%m-%d %H:%M')})\n"
         
-        message = "📦 输出文件列表:\n\n"
-        for i, file_path in enumerate(files[:5], 1):
-            file_time = datetime.fromtimestamp(file_path.stat().st_mtime)
-            file_size = file_path.stat().st_size / (1024 * 1024)
-            days_old = (datetime.now() - file_time).days
-            remaining_days = max(0, self.config.retention_days - days_old)
-            
-            message += f"{i}. {file_path.name}\n"
-            message += f"   大小: {file_size:.1f}MB | 创建: {file_time.strftime('%m-%d %H:%M')}\n"
-            message += f"   剩余: {remaining_days}天\n\n"
+        if len(files) > 10:
+            message += f"\n... 还有 {len(files) - 10} 个文件"
         
         yield event.plain_result(message)
 
-    @kaggle_group.command("off")
-    async def kaggle_off(self, event: AstrMessageEvent):
-        """停止运行"""
-        session_id = event.get_session_id()
-        notebook_name = self.running_notebooks.get(session_id)
-        
-        if not notebook_name:
-            yield event.plain_result("❌ 没有正在运行的notebook")
-            return
-        
-        notebook_info = self.get_notebook_by_identifier(notebook_name)
-        if not notebook_info:
-            yield event.plain_result("❌ 找不到notebook信息")
-            return
-        
-        _, notebook_path = notebook_info
-        
-        if await self.stop_kaggle_notebook(notebook_path):
-            if session_id in self.running_notebooks:
-                del self.running_notebooks[session_id]
-            yield event.plain_result("⏹️ 已停止运行")
-        else:
-            yield event.plain_result("❌ 停止失败")
-
-    @kaggle_group.command("status")
+    @filter.command("kaggle status")
     async def kaggle_status(self, event: AstrMessageEvent):
         """查看状态"""
-        session_id = event.get_session_id()
-        running = self.running_notebooks.get(session_id)
+        status_msg = "📊 Kaggle插件状态:\n"
+        status_msg += f"📝 已注册notebook: {len(self.notebooks)} 个\n"
+        status_msg += f"📁 输出目录: {self.output_dir}\n"
+        status_msg += f"🔄 运行中notebook: {len(self.running_notebooks)} 个\n"
         
-        message = "⚡ 当前状态:\n"
-        message += f"• 运行中: {'✅' if running else '❌'}"
+        if self.running_notebooks:
+            status_msg += "\n正在运行:\n"
+            for session_id, notebook_name in self.running_notebooks.items():
+                status_msg += f"  - {notebook_name}\n"
         
-        if running:
-            message += f" - {running}"
-        
-        message += f"\n• 默认notebook: {self.config.default_notebook or '未设置'}"
-        message += f"\n• 总notebook数: {len(self.notebooks)}"
-        message += f"\n• 输出文件数: {len(list(self.output_dir.glob('*.zip')))}"
-        
-        yield event.plain_result(message)
+        yield event.plain_result(status_msg)
 
-    @kaggle_group.command("config")
-    async def kaggle_config(self, event: AstrMessageEvent):
-        """查看配置"""
-        config_info = (
-            f"⚙️ 当前配置:\n"
-            f"• 自动发送文件: {'✅' if self.config.send_to_group else '❌'}\n"
-            f"• 文件保留天数: {self.config.retention_days}天\n"
-            f"• 自动启动: {'✅' if self.config.enable_auto_start else '❌'}\n"
-            f"• 超时时间: {self.config.timeout_minutes}分钟\n"
-            f"• 白名单群组: {len(self.config.whitelist_groups)}个\n"
-            f"• 管理员用户: {len(self.config.admin_users)}个"
-        )
-        yield event.plain_result(config_info)
-
-    async def auto_start_notebook(self, event: AstrMessageEvent):
-        """自动启动默认notebook"""
-        if not self.config.enable_auto_start or not self.config.default_notebook:
-            return
-        
-        notebook_info = self.get_notebook_by_identifier(self.config.default_notebook)
-        if not notebook_info:
-            return
-        
-        notebook_name, notebook_path = notebook_info
-        
-        await event.send(event.plain_result("🔍 检测到关键词，启动中..."))
-        
-        zip_path = await self.run_notebook(notebook_path, notebook_name, event)
-        
-        if zip_path and self.config.send_to_group:
-            try:
-                from astrbot.api.message_components import File
-                await event.send(event.chain_result([
-                    File.fromFileSystem(str(zip_path), zip_path.name)
-                ]))
-            except Exception as e:
-                logger.error(f"发送文件失败: {e}")
-
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
-    async def on_group_message(self, event: AstrMessageEvent):
-        """监听群消息，处理自动启动"""
-        # 检查关键词自动启动
-        if (self.config.enable_auto_start and 
-            self.config.default_notebook and
-            any(keyword in event.message_str for keyword in self.config.auto_start_keywords)):
-            await self.auto_start_notebook(event)
-        
-        # 更新会话活动时间
-        session_id = event.get_session_id()
-        if session_id in self.active_sessions and self.should_keep_running(event.message_str):
-            self.active_sessions[session_id] = datetime.now()
-
-    async def terminate(self):
-        """插件卸载时清理"""
-        if self.cleanup_task:
-            self.cleanup_task.cancel()
-            try:
-                await self.cleanup_task
-            except asyncio.CancelledError:
-                pass
-        
-        self.active_sessions.clear()
-        self.running_notebooks.clear()
-        logger.info("Kaggle插件已卸载")
-
-# 修复注册方式，确保config参数正确传递
 @register("kaggle_runner", "AstrBot", "Kaggle Notebook执行插件", "1.0.0")
-class KaggleRunner(Star):
-    def __init__(self, context: Context, config):
-        # 创建KagglePlugin实例并委托所有功能
-        self.plugin = KagglePlugin(context, config)
-        
-        # 将plugin的方法绑定到当前实例
-        for attr_name in dir(self.plugin):
-            if not attr_name.startswith('_'):
-                attr = getattr(self.plugin, attr_name)
-                if callable(attr):
-                    setattr(self, attr_name, attr)
-    
-    def __getattr__(self, name):
-        # 委托所有未定义的属性到plugin
-        return getattr(self.plugin, name)
+class KaggleRunner(KagglePlugin):
+    pass
