@@ -374,44 +374,48 @@ class KagglePlugin(Star):
                 # 自动生成 kernel-metadata.json，优先获取原notebook的datasets依赖
                 username, slug = notebook_path.split('/', 1)
                 metadata_path = temp_dir / "kernel-metadata.json"
-                if not metadata_path.exists():
-                    metadata = {
-                        "id": f"{username}/{slug}",
-                        "title": slug,
-                        "code_file": notebook_file.name,
-                        "language": "python",
-                        "kernel_type": "notebook",
-                        "is_private": False
-                    }
-                    # 优先获取原notebook的datasets依赖
+                # 每次都强制覆盖写入 metadata
+                metadata = {
+                    "id": f"{username}/{slug}",
+                    "title": slug,
+                    "code_file": notebook_file.name,
+                    "language": "python",
+                    "kernel_type": "notebook",
+                    "is_private": False
+                }
+                # 优先获取原notebook的datasets依赖
+                dataset_refs = []
+                try:
+                    kernel_info = api.kernels_view(notebook_path)
+                    logger.info(f"kernels_view返回: {kernel_info}")
+                    datasets = []
+                    if hasattr(kernel_info, 'datasets'):
+                        datasets = getattr(kernel_info, 'datasets', [])
+                    elif isinstance(kernel_info, dict):
+                        datasets = kernel_info.get('datasets', [])
+                    logger.info(f"解析到datasets: {datasets}")
+                    for ds in datasets:
+                        if isinstance(ds, dict):
+                            ref = ds.get('ref') or (f"{ds.get('ownerSlug')}/{ds.get('datasetSlug')}")
+                        else:
+                            ref = getattr(ds, 'ref', None) or (f"{getattr(ds, 'ownerSlug', '')}/{getattr(ds, 'datasetSlug', '')}")
+                        if ref and '/' in ref:
+                            dataset_refs.append(ref)
+                    logger.info(f"最终dataset_refs: {dataset_refs}")
+                except Exception as e:
+                    logger.warning(f"获取notebook依赖datasets失败: {e}")
                     dataset_refs = []
-                    try:
-                        kernel_info = api.kernels_view(notebook_path)
-                        datasets = []
-                        if hasattr(kernel_info, 'datasets'):
-                            datasets = getattr(kernel_info, 'datasets', [])
-                        elif isinstance(kernel_info, dict):
-                            datasets = kernel_info.get('datasets', [])
-                        for ds in datasets:
-                            if isinstance(ds, dict):
-                                ref = ds.get('ref') or (f"{ds.get('ownerSlug')}/{ds.get('datasetSlug')}")
-                            else:
-                                ref = getattr(ds, 'ref', None) or (f"{getattr(ds, 'ownerSlug', '')}/{getattr(ds, 'datasetSlug', '')}")
-                            if ref and '/' in ref:
-                                dataset_refs.append(ref)
-                    except Exception as e:
-                        logger.warning(f"获取notebook依赖datasets失败: {e}")
-                        dataset_refs = []
-                    # 写入datasets字段
-                    if dataset_refs:
-                        metadata["datasets"] = dataset_refs
-                    else:
-                        # 兼容用户自定义
-                        datasets = getattr(self.config, 'kaggle_datasets', None)
-                        if datasets and isinstance(datasets, list) and len(datasets) > 0:
-                            metadata["datasets"] = datasets
-                    with open(metadata_path, "w", encoding="utf-8") as f:
-                        json.dump(metadata, f, indent=2)
+                # 无论dataset_refs是否为空都写入，便于调试
+                metadata["datasets"] = dataset_refs
+                # 若dataset_refs为空，兼容用户自定义
+                if not dataset_refs:
+                    datasets = getattr(self.config, 'kaggle_datasets', None)
+                    if datasets and isinstance(datasets, list):
+                        metadata["datasets"] = datasets
+                        logger.info(f"使用config.kaggle_datasets: {datasets}")
+                with open(metadata_path, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2)
+                logger.info(f"最终写入kernel-metadata.json内容: {metadata}")
 
                 # 使用绝对路径确保正确性
                 abs_temp_dir = temp_dir.resolve()
