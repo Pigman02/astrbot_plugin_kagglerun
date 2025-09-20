@@ -158,6 +158,7 @@ class KagglePlugin(Star):
 
     async def download_and_package_output(self, notebook_path: str, notebook_name: str) -> Optional[Path]:
         """下载并打包输出文件"""
+        temp_dir = None
         try:
             from kaggle.api.kaggle_api_extended import KaggleApi
             api = KaggleApi()
@@ -182,7 +183,6 @@ class KagglePlugin(Star):
             files = list(temp_dir.glob('*'))
             if not files:
                 logger.warning(f"没有找到输出文件: {notebook_path}")
-                shutil.rmtree(temp_dir, ignore_errors=True)
                 return None
             
             # 创建ZIP文件
@@ -195,17 +195,18 @@ class KagglePlugin(Star):
                         arcname = file.relative_to(temp_dir)
                         zipf.write(file, arcname)
             
-            shutil.rmtree(temp_dir, ignore_errors=True)
             return zip_path
             
         except Exception as e:
             logger.error(f"打包输出文件失败: {e}")
-            # 清理临时目录
-            try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            except:
-                pass
             return None
+        finally:
+            # 清理临时目录
+            if temp_dir and temp_dir.exists():
+                try:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                except:
+                    pass
 
     async def run_notebook(self, notebook_path: str, notebook_name: str, event: AstrMessageEvent = None) -> Optional[Path]:
         """运行notebook并返回输出文件路径 - 正确的pull→push流程"""
@@ -633,6 +634,20 @@ class KagglePlugin(Star):
         self.running_notebooks.clear()
         logger.info("Kaggle插件已卸载")
 
+# 修复注册方式，确保config参数正确传递
 @register("kaggle_runner", "AstrBot", "Kaggle Notebook执行插件", "1.0.0")
-class KaggleRunner(KagglePlugin):
-    pass
+class KaggleRunner(Star):
+    def __init__(self, context: Context, config):
+        # 创建KagglePlugin实例并委托所有功能
+        self.plugin = KagglePlugin(context, config)
+        
+        # 将plugin的方法绑定到当前实例
+        for attr_name in dir(self.plugin):
+            if not attr_name.startswith('_'):
+                attr = getattr(self.plugin, attr_name)
+                if callable(attr):
+                    setattr(self, attr_name, attr)
+    
+    def __getattr__(self, name):
+        # 委托所有未定义的属性到plugin
+        return getattr(self.plugin, name)
