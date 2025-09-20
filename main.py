@@ -277,7 +277,9 @@ class KagglePlugin(Star):
                 status = getattr(kernel_status, 'status', 'unknown')
                 
                 if event:
-                    await event.send(event.plain_result(f"📊 Notebook状态: {status}"))
+                    # 只有在状态不正常时才发送状态信息
+                    if status not in ['ready', 'complete', 'running']:
+                        await event.send(event.plain_result(f"📊 Notebook状态: {status}"))
                 
                 # 检查状态是否有效
                 if status in ['CANCEL_ACKNOWLEDGED', 'ERROR', 'FAILED', 'CANCELLED']:
@@ -296,6 +298,7 @@ class KagglePlugin(Star):
                     if event:
                         await event.send(event.plain_result(f"⚠️ 验证时出现错误: {str(e)}"))
                     logger.warning(f"验证notebook时出现错误: {e}")
+                    # 继续执行，不因验证错误而停止
             
             # 记录运行中的notebook
             if event:
@@ -371,19 +374,27 @@ class KagglePlugin(Star):
                     return None
 
                 # 自动生成 kernel-metadata.json
-                username, slug = notebook_path.split('/', 1)
+                original_username, slug = notebook_path.split('/', 1)
                 metadata_path = temp_dir / "kernel-metadata.json"
                 if not metadata_path.exists():
+                    # 生成新的ID，使用当前用户名而不是原始用户名
+                    new_id = f"{self.config.kaggle_username}/{slug}"
                     metadata = {
-                        "id": f"{username}/{slug}",
-                        "title": slug,
+                        "id": new_id,
+                        "title": slug.replace('-', ' ').title(),
                         "code_file": notebook_file.name,
                         "language": "python",
-                        "kernel_type": "notebook",
-                        "is_private": False
+                        "kernel_type": "notebook" if notebook_file.suffix.lower() == '.ipynb' else "script",
+                        "is_private": True,
+                        "enable_gpu": "false",
+                        "enable_internet": "true",
+                        "dataset_sources": [],
+                        "competition_sources": [],
+                        "kernel_sources": []
                     }
                     with open(metadata_path, "w", encoding="utf-8") as f:
                         json.dump(metadata, f, indent=2)
+                    logger.info(f"已生成 kernel-metadata.json: {metadata}")
 
                 # 使用绝对路径确保正确性
                 abs_temp_dir = temp_dir.resolve()
@@ -392,11 +403,11 @@ class KagglePlugin(Star):
 
                 if result and hasattr(result, 'status') and getattr(result, 'status') == 'ok':
                     if event:
-                        await event.send(event.plain_result("✅ 运行完成，等待输出文件生成..."))
-                    logger.info(f"Notebook运行成功: {notebook_path}")
+                        await event.send(event.plain_result("✅ Notebook提交成功，等待运行完成..."))
+                    logger.info(f"Notebook提交成功: {notebook_path}")
 
                     # 等待更长时间让notebook完成运行
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(45)
 
                     # 3. 下载输出文件
                     logger.info(f"开始下载输出文件: {notebook_path}")
@@ -414,14 +425,14 @@ class KagglePlugin(Star):
                         return zip_path
                     else:
                         if event:
-                            await event.send(event.plain_result("⚠️ 运行完成但未找到输出文件"))
+                            await event.send(event.plain_result("⚠️ Notebook运行完成但未找到输出文件"))
                         logger.warning(f"Notebook运行完成但未找到输出文件: {notebook_path}")
                         return None
                 else:
                     error_msg = getattr(result, 'error', '未知错误') if result else '无响应'
                     if event:
-                        await event.send(event.plain_result(f"❌ 运行失败: {error_msg}"))
-                    logger.error(f"Notebook运行失败: {error_msg}")
+                        await event.send(event.plain_result(f"❌ Notebook提交失败: {error_msg}"))
+                    logger.error(f"Notebook提交失败: {error_msg}")
                     return None
 
             except Exception as run_error:
@@ -704,8 +715,8 @@ class KagglePlugin(Star):
             yield event.plain_result(f"📦 完成: {zip_path.name}")
             logger.info(f"Notebook运行完成: {zip_path.name}")
         else:
-            yield event.plain_result("❌ 运行失败")
-            logger.error(f"Notebook运行失败: {notebook_name}")
+            # 只有在确实失败时才显示失败信息
+            pass  # 不再显示"运行失败"，因为错误信息已在 run_notebook 中处理
 
 @register("kaggle_runner", "AstrBot", "Kaggle Notebook执行插件", "1.0.0")
 class KaggleRunner(KagglePlugin):
