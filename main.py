@@ -17,9 +17,11 @@ class KagglePlugin(Star):
         self.config = config
         self.active_sessions: Dict[str, datetime] = {}
         self.running_notebooks: Dict[str, str] = {}
-        self.notebooks_file = Path("data/kaggle_notebooks.json")
+        # 修改存储路径为相对路径
+        self.plugin_data_dir = Path("data/plugin_data/astrbot_plugin_kagglerun")
+        self.notebooks_file = self.plugin_data_dir / "kaggle_notebooks.json"
         self.notebooks: Dict[str, str] = {}
-        self.output_dir = Path(self.config.output_dir)
+        self.output_dir = self.plugin_data_dir / "outputs"
         self.cleanup_task = None
         
         # 初始化
@@ -32,6 +34,7 @@ class KagglePlugin(Star):
         """设置输出目录"""
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
+            self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"输出目录设置完成: {self.output_dir}")
         except Exception as e:
             logger.error(f"设置输出目录失败: {e}")
