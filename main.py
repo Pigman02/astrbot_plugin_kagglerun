@@ -317,10 +317,13 @@ class KagglePlugin(Star):
                 # 自动写入 datasets 字段
                 if hasattr(self.config, "kaggle_datasets") and self.config.kaggle_datasets:
                     metadata["datasets"] = self.config.kaggle_datasets
+                # 删除id字段，避免409冲突
+                if "id" in metadata:
+                    del metadata["id"]
                 with open(metadata_path, "w", encoding="utf-8") as f:
                     json.dump(metadata, f, indent=2, ensure_ascii=False)
                 if event:
-                    await event.send(event.plain_result(f"📝 已修正kernel-metadata.json code_file: {notebook_file.name}, language: python, kernel_type: notebook, datasets: {getattr(self.config, 'kaggle_datasets', None)}"))
+                    await event.send(event.plain_result(f"📝 已修正kernel-metadata.json code_file: {notebook_file.name}, language: python, kernel_type: notebook, datasets: {getattr(self.config, 'kaggle_datasets', None)}, id字段已移除"))
             # 4. push notebook
             result = api.kernels_push(str(temp_dir))
             status_ok = False
