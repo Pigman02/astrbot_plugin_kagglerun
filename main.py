@@ -317,13 +317,18 @@ class KagglePlugin(Star):
                 # 自动写入 datasets 字段
                 if hasattr(self.config, "kaggle_datasets") and self.config.kaggle_datasets:
                     metadata["datasets"] = self.config.kaggle_datasets
-                # 删除id字段，避免409冲突
-                if "id" in metadata:
-                    del metadata["id"]
+                # id/slug 处理逻辑
+                if not metadata.get("id"):
+                    # 自动补slug字段
+                    slug = notebook_file.name.rsplit(".", 1)[0].replace("_", "-").lower()
+                    metadata["slug"] = slug
+                    if event:
+                        await event.send(event.plain_result(f"📝 metadata无id字段，已自动补slug: {slug}"))
+                # 如果有id字段则保留，不做删除
                 with open(metadata_path, "w", encoding="utf-8") as f:
                     json.dump(metadata, f, indent=2, ensure_ascii=False)
                 if event:
-                    await event.send(event.plain_result(f"📝 已修正kernel-metadata.json code_file: {notebook_file.name}, language: python, kernel_type: notebook, datasets: {getattr(self.config, 'kaggle_datasets', None)}, id字段已移除"))
+                    await event.send(event.plain_result(f"📝 已修正kernel-metadata.json code_file: {notebook_file.name}, language: python, kernel_type: notebook, datasets: {getattr(self.config, 'kaggle_datasets', None)}, id: {metadata.get('id', None)}, slug: {metadata.get('slug', None)}"))
             # 4. push notebook
             result = api.kernels_push(str(temp_dir))
             status_ok = False
