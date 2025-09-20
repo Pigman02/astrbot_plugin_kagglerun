@@ -314,9 +314,21 @@ class KagglePlugin(Star):
                 metadata["code_file"] = notebook_file.name
                 metadata["language"] = "python"
                 metadata["kernel_type"] = "notebook"
-                # 自动写入 datasets 字段
+                # 自动修正 title 字段，避免 INSERT_TITLE_HERE
+                title = notebook_file.name.rsplit(".", 1)[0]
+                if metadata.get("title", "").strip().upper() == "INSERT_TITLE_HERE" or not metadata.get("title"):
+                    metadata["title"] = title
+                    if event:
+                        await event.send(event.plain_result(f"📝 已自动修正title字段: {title}"))
+                # 自动写入 datasets 字段，并校验内容
+                datasets = []
                 if hasattr(self.config, "kaggle_datasets") and self.config.kaggle_datasets:
-                    metadata["datasets"] = self.config.kaggle_datasets
+                    # 只保留非空字符串
+                    datasets = [ds for ds in self.config.kaggle_datasets if isinstance(ds, str) and ds.strip()]
+                    if datasets:
+                        metadata["datasets"] = datasets
+                if event:
+                    await event.send(event.plain_result(f"📝 datasets字段最终内容: {datasets if datasets else '无'}"))
                 # id/slug 处理逻辑
                 if not metadata.get("id"):
                     # 自动补slug字段
@@ -328,7 +340,7 @@ class KagglePlugin(Star):
                 with open(metadata_path, "w", encoding="utf-8") as f:
                     json.dump(metadata, f, indent=2, ensure_ascii=False)
                 if event:
-                    await event.send(event.plain_result(f"📝 已修正kernel-metadata.json code_file: {notebook_file.name}, language: python, kernel_type: notebook, datasets: {getattr(self.config, 'kaggle_datasets', None)}, id: {metadata.get('id', None)}, slug: {metadata.get('slug', None)}"))
+                    await event.send(event.plain_result(f"📝 已修正kernel-metadata.json code_file: {notebook_file.name}, language: python, kernel_type: notebook, title: {metadata.get('title', None)}, datasets: {getattr(self.config, 'kaggle_datasets', None)}, id: {metadata.get('id', None)}, slug: {metadata.get('slug', None)}"))
             # 4. push notebook
             result = api.kernels_push(str(temp_dir))
             status_ok = False
