@@ -287,8 +287,7 @@ class KagglePlugin(Star):
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             if event:
                 await event.send(event.plain_result(f"📝 kaggle kernels init 输出: {result.stdout}\n{result.stderr}"))
-            # 3. 继续后续push等原有流程
-            # 获取notebook文件名
+            # 3. 修正 kernel-metadata.json 的 code_file 字段为实际notebook文件名
             notebook_file = None
             valid_extensions = ['.ipynb', '.py']
             for file in temp_dir.glob('*'):
@@ -308,6 +307,15 @@ class KagglePlugin(Star):
                 if event:
                     await event.send(event.plain_result("❌ 未找到notebook文件 (.ipynb 或 .py)"))
                 return None
+            metadata_path = temp_dir / "kernel-metadata.json"
+            if metadata_path.exists():
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+                metadata["code_file"] = notebook_file.name
+                with open(metadata_path, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2, ensure_ascii=False)
+                if event:
+                    await event.send(event.plain_result(f"📝 已修正kernel-metadata.json code_file: {notebook_file.name}"))
             # 4. push notebook
             result = api.kernels_push(str(temp_dir))
             status_ok = False
