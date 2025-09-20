@@ -108,9 +108,12 @@ class KagglePlugin(Star):
         except Exception as e:
             logger.error(f"保存notebook列表失败: {e}")
 
-    def get_notebook_by_identifier(self, identifier: str) -> Optional[Tuple[str, str]]:
+    def get_notebook_by_identifier(self, identifier) -> Optional[Tuple[str, str]]:
         """通过序号或名称获取notebook"""
         try:
+            # 确保identifier是字符串类型
+            identifier = str(identifier)
+            
             # 尝试按序号查找
             if identifier.isdigit():
                 index = int(identifier) - 1
@@ -384,6 +387,7 @@ class KagglePlugin(Star):
                     if event:
                         await event.send(event.plain_result("❌ Notebook路径无效或不存在"))
                         await event.send(event.plain_result("💡 提示: 确保下载的目录包含有效的notebook文件"))
+                        await event.send(event.plain_result(f"💡 当前路径: {notebook_path}"))
                 elif "already running" in error_msg.lower():
                     if event:
                         await event.send(event.plain_result("⚠️ Notebook已经在运行中，等待完成..."))
@@ -563,6 +567,7 @@ class KagglePlugin(Star):
             elif "Invalid folder" in str(e):
                 yield event.plain_result(f"❌ Notebook路径无效: {path}")
                 yield event.plain_result("💡 请确认用户名和slug是否正确")
+                yield event.plain_result(f"💡 当前路径: {path}")
             else:
                 yield event.plain_result(f"❌ 验证失败: {str(e)}")
 
