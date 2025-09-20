@@ -340,18 +340,18 @@ class KagglePlugin(Star):
             if event:
                 await event.send(event.plain_result("🚀 开始运行notebook..."))
             
-            # 2. 关键修复：正确使用下载的目录进行push
+            # 2. 关键修复：正确使用下载的目录进行push，并自动生成 kernel-metadata.json
             try:
                 # 获取下载的notebook文件路径
                 notebook_file = None
                 valid_extensions = ['.ipynb', '.py']
-                
+
                 # 先在根目录查找
                 for file in temp_dir.glob('*'):
                     if file.suffix.lower() in valid_extensions:
                         notebook_file = file
                         break
-                
+
                 # 如果根目录没找到，在子目录中查找
                 if not notebook_file:
                     for file in temp_dir.rglob('*'):
@@ -363,37 +363,52 @@ class KagglePlugin(Star):
                                 shutil.move(str(file), str(target_path))
                             notebook_file = target_path
                             break
-                
+
                 if not notebook_file:
                     if event:
                         await event.send(event.plain_result("❌ 未找到notebook文件 (.ipynb 或 .py)"))
                     logger.error(f"未找到有效的notebook文件: {temp_dir}")
                     return None
-                
+
+                # 自动生成 kernel-metadata.json
+                username, slug = notebook_path.split('/', 1)
+                metadata_path = temp_dir / "kernel-metadata.json"
+                if not metadata_path.exists():
+                    metadata = {
+                        "id": f"{username}/{slug}",
+                        "title": slug,
+                        "code_file": notebook_file.name,
+                        "language": "python",
+                        "kernel_type": "notebook",
+                        "is_private": False
+                    }
+                    with open(metadata_path, "w", encoding="utf-8") as f:
+                        json.dump(metadata, f, indent=2)
+
                 # 使用绝对路径确保正确性
                 abs_temp_dir = temp_dir.resolve()
                 logger.info(f"准备运行notebook，目录: {abs_temp_dir}")
                 result = api.kernels_push(str(abs_temp_dir))
-                
+
                 if result and hasattr(result, 'status') and getattr(result, 'status') == 'ok':
                     if event:
                         await event.send(event.plain_result("✅ 运行完成，等待输出文件生成..."))
                     logger.info(f"Notebook运行成功: {notebook_path}")
-                    
+
                     # 等待更长时间让notebook完成运行
                     await asyncio.sleep(30)
-                    
+
                     # 3. 下载输出文件
                     logger.info(f"开始下载输出文件: {notebook_path}")
                     zip_path = await self.download_and_package_output(notebook_path, notebook_name)
-                    
+
                     # 清理运行记录
                     if event:
                         session_id = getattr(event, 'session_id', 'default')
                         if session_id in self.running_notebooks:
                             del self.running_notebooks[session_id]
                             logger.info(f"清理运行记录: {session_id}")
-                    
+
                     if zip_path:
                         logger.info(f"Notebook运行完成，输出文件: {zip_path}")
                         return zip_path
@@ -408,14 +423,14 @@ class KagglePlugin(Star):
                         await event.send(event.plain_result(f"❌ 运行失败: {error_msg}"))
                     logger.error(f"Notebook运行失败: {error_msg}")
                     return None
-                    
+
             except Exception as run_error:
                 error_msg = str(run_error)
                 logger.error(f"运行notebook时发生异常: {error_msg}")
                 if "Invalid folder" in error_msg or "not found" in error_msg.lower():
                     if event:
                         await event.send(event.plain_result("❌ Notebook路径无效或不存在"))
-                        await event.send(event.plain_result("💡 提示: 确保下载的目录包含有效的notebook文件"))
+                        await event.send(event.plain_result("💡 提示: 确保下载的目录包含有效的notebook文件和 kernel-metadata.json"))
                         await event.send(event.plain_result(f"💡 当前路径: {notebook_path}"))
                 elif "already running" in error_msg.lower():
                     if event:
@@ -424,19 +439,19 @@ class KagglePlugin(Star):
                     # 等待并尝试获取输出
                     await asyncio.sleep(60)
                     zip_path = await self.download_and_package_output(notebook_path, notebook_name)
-                    
+
                     # 清理运行记录
                     if event:
                         session_id = getattr(event, 'session_id', 'default')
                         if session_id in self.running_notebooks:
                             del self.running_notebooks[session_id]
                             logger.info(f"清理运行记录: {session_id}")
-                    
+
                     return zip_path
                 else:
                     if event:
                         await event.send(event.plain_result(f"❌ 运行过程中出错: {error_msg}"))
-                
+
                 return None
                 
         except Exception as e:
