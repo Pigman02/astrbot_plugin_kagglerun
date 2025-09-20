@@ -242,69 +242,119 @@ class KagglePlugin(Star):
             return False
 
     async def run_notebook(self, notebook_path: str, notebook_name: str, event: AstrMessageEvent = None) -> Optional[Path]:
-        """仅处理kaggle官方推送流程，保证插件结构和类型兼容"""
+        """下载notebook、生成kernel-metadata.json（用kaggle kernels init），其余流程保持原有逻辑"""
         import tempfile
         import subprocess
-        import re
         import shutil
         import json
         from pathlib import Path
         try:
-            temp_dir = Path(tempfile.mkdtemp(prefix="kaggle_upload_"))
+            api = self.get_kaggle_api()
             if event:
-                await event.send(event.plain_result(f"📁 创建临时目录: {temp_dir}"))
-
-            nb_file = Path(notebook_name)
-            if not nb_file.exists():
+                await event.send(event.plain_result("� 验证notebook是否存在..."))
+            # 验证notebook状态
+            try:
+                kernel_status = api.kernels_status(notebook_path)
+                status = getattr(kernel_status, 'status', 'unknown')
                 if event:
-                    await event.send(event.plain_result("❌ 未找到notebook文件"))
-                return None
-            shutil.copy(nb_file, temp_dir / nb_file.name)
-
-            def slugify(title):
-                slug = title.lower()
-                slug = re.sub(r'[^a-z0-9\\s-]', '', slug)
-                slug = re.sub(r'\\s+', '-', slug)
-                slug = re.sub(r'-+', '-', slug)
-                return slug.strip('-')
-            title = nb_file.stem
-            slug = slugify(title)
-            username = getattr(self.config, 'kaggle_username', 'your_username')
-            datasets = getattr(self.config, 'kaggle_datasets', [])
-            is_private = getattr(self.config, 'kaggle_is_private', True)
-            metadata = {
-                "id": f"{username}/{slug}",
-                "title": title,
-                "code_file": nb_file.name,
-                "language": "python",
-                "kernel_type": "notebook",
-                "is_private": is_private,
-                "datasets": datasets
-            }
-            extra_metadata = getattr(self.config, 'kaggle_extra_metadata', None)
-            if extra_metadata and isinstance(extra_metadata, dict):
-                metadata.update(extra_metadata)
-            with open(temp_dir / "kernel-metadata.json", "w", encoding="utf-8") as f:
-                json.dump(metadata, f, indent=2, ensure_ascii=False)
+                    await event.send(event.plain_result(f"📊 Notebook状态: {status}"))
+                if status in ['CANCEL_ACKNOWLEDGED', 'ERROR', 'FAILED', 'CANCELLED']:
+                    if event:
+                        await event.send(event.plain_result("❌ Notebook状态无效，可能已被取消或不存在"))
+                    return None
+            except Exception as e:
+                if "Not Found" in str(e) or "404" in str(e):
+                    if event:
+                        await event.send(event.plain_result(f"❌ Notebook不存在: {notebook_path}"))
+                    return None
+                else:
+                    if event:
+                        await event.send(event.plain_result(f"⚠️ 验证时出现错误: {str(e)}"))
+            # 记录运行中的notebook
             if event:
-                await event.send(event.plain_result(f"📝 已生成kernel-metadata.json: {metadata}"))
-
-            cmd = f'kaggle kernels push -p "{str(temp_dir)}"'
+                session_id = getattr(event, 'session_id', 'default')
+                self.running_notebooks[session_id] = notebook_name
             if event:
-                await event.send(event.plain_result(f"🚀 执行: {cmd}"))
+                await event.send(event.plain_result("📥 正在下载notebook..."))
+            # 1. pull notebook
+            import tempfile
+            temp_dir = Path(tempfile.mkdtemp(prefix="kaggle_"))
+            api.kernels_pull(notebook_path, path=str(temp_dir))
+            if event:
+                await event.send(event.plain_result(f"✅ Notebook下载完成: {temp_dir}"))
+            # 2. 用kaggle kernels init生成kernel-metadata.json
+            cmd = f'kaggle kernels init -p "{str(temp_dir)}"'
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             if event:
-                await event.send(event.plain_result(f"stdout: {result.stdout}"))
-                await event.send(event.plain_result(f"stderr: {result.stderr}"))
-            if result.returncode == 0:
+                await event.send(event.plain_result(f"📝 kaggle kernels init 输出: {result.stdout}\n{result.stderr}"))
+            # 3. 继续后续push等原有流程
+            # 获取notebook文件名
+            notebook_file = None
+            valid_extensions = ['.ipynb', '.py']
+            for file in temp_dir.glob('*'):
+                if file.suffix.lower() in valid_extensions:
+                    notebook_file = file
+                    break
+            if not notebook_file:
+                for file in temp_dir.rglob('*'):
+                    if file.suffix.lower() in valid_extensions:
+                        notebook_file = file
+                        target_path = temp_dir / file.name
+                        if not target_path.exists():
+                            shutil.move(str(file), str(target_path))
+                        notebook_file = target_path
+                        break
+            if not notebook_file:
                 if event:
-                    await event.send(event.plain_result("✅ Notebook已推送并运行（请到Kaggle网页查看结果）"))
-            else:
-                if event:
-                    await event.send(event.plain_result("❌ 推送失败，请检查日志"))
+                    await event.send(event.plain_result("❌ 未找到notebook文件 (.ipynb 或 .py)"))
                 return None
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return None
+            # 4. push notebook
+            result = api.kernels_push(str(temp_dir))
+            status_ok = False
+            if result is None:
+                status_ok = True
+            elif isinstance(result, dict):
+                if result.get('status') == 'ok':
+                    status_ok = True
+                elif result.get('error'):
+                    status_ok = False
+                else:
+                    status_ok = True
+            else:
+                if hasattr(result, 'status') and getattr(result, 'status') == 'ok':
+                    status_ok = True
+                elif hasattr(result, 'error') and getattr(result, 'error'):
+                    status_ok = False
+                else:
+                    status_ok = True
+            if status_ok:
+                if event:
+                    await event.send(event.plain_result("✅ 运行完成，等待输出文件生成..."))
+                import asyncio
+                await asyncio.sleep(30)
+                zip_path = await self.download_and_package_output(notebook_path, notebook_name)
+                if event:
+                    session_id = getattr(event, 'session_id', 'default')
+                    if session_id in self.running_notebooks:
+                        del self.running_notebooks[session_id]
+                if zip_path:
+                    return zip_path
+                else:
+                    if event:
+                        await event.send(event.plain_result("⚠️ 运行完成但未找到输出文件"))
+                    return None
+            else:
+                error_msg = None
+                if result:
+                    if isinstance(result, dict):
+                        error_msg = result.get('error', '未知错误')
+                    else:
+                        error_msg = getattr(result, 'error', '未知错误')
+                else:
+                    error_msg = '无响应'
+                if event:
+                    await event.send(event.plain_result(f"❌ 运行失败: {error_msg}"))
+                return None
         except Exception as e:
             if event:
                 await event.send(event.plain_result(f"❌ 运行失败: {str(e)}"))
