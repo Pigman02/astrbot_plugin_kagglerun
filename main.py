@@ -371,7 +371,7 @@ class KagglePlugin(Star):
                     logger.error(f"未找到有效的notebook文件: {temp_dir}")
                     return None
 
-                # 自动生成 kernel-metadata.json
+                # 自动生成 kernel-metadata.json，优先获取原notebook的datasets依赖
                 username, slug = notebook_path.split('/', 1)
                 metadata_path = temp_dir / "kernel-metadata.json"
                 if not metadata_path.exists():
@@ -383,10 +383,33 @@ class KagglePlugin(Star):
                         "kernel_type": "notebook",
                         "is_private": False
                     }
-                    # 自动添加 datasets 字段（如有配置）
-                    datasets = getattr(self.config, 'kaggle_datasets', None)
-                    if datasets and isinstance(datasets, list) and len(datasets) > 0:
-                        metadata["datasets"] = datasets
+                    # 优先获取原notebook的datasets依赖
+                    dataset_refs = []
+                    try:
+                        kernel_info = api.kernels_view(notebook_path)
+                        datasets = []
+                        if hasattr(kernel_info, 'datasets'):
+                            datasets = getattr(kernel_info, 'datasets', [])
+                        elif isinstance(kernel_info, dict):
+                            datasets = kernel_info.get('datasets', [])
+                        for ds in datasets:
+                            if isinstance(ds, dict):
+                                ref = ds.get('ref') or (f"{ds.get('ownerSlug')}/{ds.get('datasetSlug')}")
+                            else:
+                                ref = getattr(ds, 'ref', None) or (f"{getattr(ds, 'ownerSlug', '')}/{getattr(ds, 'datasetSlug', '')}")
+                            if ref and '/' in ref:
+                                dataset_refs.append(ref)
+                    except Exception as e:
+                        logger.warning(f"获取notebook依赖datasets失败: {e}")
+                        dataset_refs = []
+                    # 写入datasets字段
+                    if dataset_refs:
+                        metadata["datasets"] = dataset_refs
+                    else:
+                        # 兼容用户自定义
+                        datasets = getattr(self.config, 'kaggle_datasets', None)
+                        if datasets and isinstance(datasets, list) and len(datasets) > 0:
+                            metadata["datasets"] = datasets
                     with open(metadata_path, "w", encoding="utf-8") as f:
                         json.dump(metadata, f, indent=2)
 
@@ -394,8 +417,16 @@ class KagglePlugin(Star):
                 abs_temp_dir = temp_dir.resolve()
                 logger.info(f"准备运行notebook，目录: {abs_temp_dir}")
                 result = api.kernels_push(str(abs_temp_dir))
+                # Kaggle API 返回 dict 或对象，status=='ok' 为成功
+                status_ok = False
+                if result:
+                    # 兼容对象和dict
+                    if isinstance(result, dict):
+                        status_ok = result.get('status') == 'ok'
+                    else:
+                        status_ok = hasattr(result, 'status') and getattr(result, 'status') == 'ok'
 
-                if result and hasattr(result, 'status') and getattr(result, 'status') == 'ok':
+                if status_ok:
                     if event:
                         await event.send(event.plain_result("✅ 运行完成，等待输出文件生成..."))
                     logger.info(f"Notebook运行成功: {notebook_path}")
@@ -423,7 +454,15 @@ class KagglePlugin(Star):
                         logger.warning(f"Notebook运行完成但未找到输出文件: {notebook_path}")
                         return None
                 else:
-                    error_msg = getattr(result, 'error', '未知错误') if result else '无响应'
+                    # 失败时才报错
+                    error_msg = None
+                    if result:
+                        if isinstance(result, dict):
+                            error_msg = result.get('error', '未知错误')
+                        else:
+                            error_msg = getattr(result, 'error', '未知错误')
+                    else:
+                        error_msg = '无响应'
                     if event:
                         await event.send(event.plain_result(f"❌ 运行失败: {error_msg}"))
                     logger.error(f"Notebook运行失败: {error_msg}")
