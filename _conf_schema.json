@@ -1,48 +1,57 @@
 {
-  "kaggle_api_key": {
-    "type": "string",
-    "description": "Kaggle API Key",
-    "hint": "从Kaggle账户设置中获取API Key"
-  },
   "kaggle_username": {
     "type": "string",
     "description": "Kaggle用户名",
-    "hint": "您的Kaggle用户名"
+    "hint": "您的Kaggle账号用户名"
+  },
+  "kaggle_api_key": {
+    "type": "string",
+    "description": "Kaggle API密钥",
+    "hint": "从Kaggle网站获取的API密钥",
+    "obvious_hint": true
   },
   "default_notebook": {
     "type": "string",
     "description": "默认notebook名称",
-    "hint": "使用/kaggle run直接启动的notebook名称",
-    "default": ""
+    "hint": "当未指定notebook名称时使用的默认notebook"
   },
-  "keywords": {
-    "type": "list",
-    "description": "会话保持关键词",
-    "hint": "当聊天中出现这些关键词时保持会话运行状态",
-    "default": ["数据", "分析", "模型", "训练", "预测", "kaggle"]
-  },
-  "admin_users": {
-    "type": "list",
-    "description": "管理员用户ID",
-    "hint": "可以添加/删除notebook的用户ID列表",
-    "default": []
+  "send_to_group": {
+    "type": "bool",
+    "description": "发送结果到群聊",
+    "hint": "是否将运行结果发送到群聊",
+    "default": true
   },
   "retention_days": {
     "type": "int",
     "description": "文件保留天数",
-    "hint": "输出文件自动删除前的保留时间",
+    "hint": "输出文件保留的天数",
     "default": 7
   },
-  "send_to_group": {
+  "kaggle_datasets": {
+    "type": "list",
+    "description": "Kaggle数据集列表",
+    "hint": "notebook依赖的数据集列表，格式为: username/dataset-name",
+    "default": []
+  },
+  "enable_gpu": {
     "type": "bool",
-    "description": "自动发送输出文件到群聊",
-    "hint": "运行完成后是否自动发送压缩包到群聊",
+    "description": "启用GPU",
+    "hint": "是否在Kaggle运行时启用GPU",
+    "default": false
+  },
+  "enable_internet": {
+    "type": "bool",
+    "description": "启用互联网访问",
+    "hint": "是否在Kaggle运行时启用互联网访问",
     "default": true
   },
-  "output_dir": {
-    "type": "string",
-    "description": "输出文件目录",
-    "hint": "存储输出文件的目录路径",
-    "default": "data/outputs"
+  "kaggle_extra_metadata": {
+    "type": "object",
+    "description": "额外的Kaggle元数据",
+    "hint": "额外的kernel-metadata.json配置",
+    "default": {},
+    "editor_mode": true,
+    "editor_language": "json",
+    "editor_theme": "vs-dark"
   }
 }
