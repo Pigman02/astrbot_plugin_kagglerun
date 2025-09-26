@@ -33,12 +33,6 @@
     "default": [],
     "hint": "Notebook 依赖的数据集列表"
   },
-  "kaggle_extra_metadata": {
-    "type": "object",
-    "description": "额外的元数据",
-    "default": {},
-    "hint": "自定义的 kernel-metadata.json 额外字段"
-  },
   "keywords": {
     "type": "list",
     "description": "关键词列表",
