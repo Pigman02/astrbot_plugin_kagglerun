@@ -1,57 +1,40 @@
 {
   "kaggle_username": {
     "type": "string",
-    "description": "Kaggle用户名",
-    "hint": "您的Kaggle账号用户名"
+    "description": "Kaggle 用户名"
   },
   "kaggle_api_key": {
     "type": "string",
-    "description": "Kaggle API密钥",
-    "hint": "从Kaggle网站获取的API密钥",
-    "obvious_hint": true
-  },
-  "default_notebook": {
-    "type": "string",
-    "description": "默认notebook名称",
-    "hint": "当未指定notebook名称时使用的默认notebook"
-  },
-  "send_to_group": {
-    "type": "bool",
-    "description": "发送结果到群聊",
-    "hint": "是否将运行结果发送到群聊",
-    "default": true
-  },
-  "retention_days": {
-    "type": "int",
-    "description": "文件保留天数",
-    "hint": "输出文件保留的天数",
-    "default": 7
+    "description": "Kaggle API 密钥"
   },
   "kaggle_datasets": {
     "type": "list",
-    "description": "Kaggle数据集列表",
-    "hint": "notebook依赖的数据集列表，格式为: username/dataset-name",
-    "default": []
-  },
-  "enable_gpu": {
-    "type": "bool",
-    "description": "启用GPU",
-    "hint": "是否在Kaggle运行时启用GPU",
-    "default": false
-  },
-  "enable_internet": {
-    "type": "bool",
-    "description": "启用互联网访问",
-    "hint": "是否在Kaggle运行时启用互联网访问",
-    "default": true
+    "items": {
+      "type": "string"
+    },
+    "description": "默认依赖的数据集列表（如 owner/dataset-slug）"
   },
   "kaggle_extra_metadata": {
-    "type": "object",
-    "description": "额外的Kaggle元数据",
-    "hint": "额外的kernel-metadata.json配置",
-    "default": {},
-    "editor_mode": true,
-    "editor_language": "json",
-    "editor_theme": "vs-dark"
+    "type": "dict",
+    "description": "kernel-metadata.json 额外自定义字段"
+  },
+  "default_notebook": {
+    "type": "string",
+    "description": "默认 notebook 名称"
+  },
+  "send_to_group": {
+    "type": "bool",
+    "description": "运行完成后是否自动发送输出到群聊"
+  },
+  "retention_days": {
+    "type": "int",
+    "description": "输出文件保留天数"
+  },
+  "keywords": {
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "description": "触发自动运行的关键词"
   }
 }
