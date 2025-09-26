@@ -26,31 +26,18 @@ class KagglePlugin(Star):
             logger.error(f"Kaggle API认证失败: {e}")
             raise
         return api
-
+    # 可在 config 里配置 kaggle_datasets: List[str]
     def __init__(self, context: Context, config):
         super().__init__(context)
         self.config = config
         self.active_sessions: Dict[str, datetime] = {}
         self.running_notebooks: Dict[str, str] = {}
-        
         # 修改存储路径为相对路径
         self.plugin_data_dir = Path("data/plugin_data/astrbot_plugin_kagglerun")
         self.notebooks_file = self.plugin_data_dir / "kaggle_notebooks.json"
         self.notebooks: Dict[str, str] = {}
         self.output_dir = self.plugin_data_dir / "outputs"
         self.cleanup_task = None
-        
-        # 设置默认配置值
-        if not hasattr(self.config, 'kaggle_datasets'):
-            self.config.kaggle_datasets = []
-        if not hasattr(self.config, 'enable_gpu'):
-            self.config.enable_gpu = False
-        if not hasattr(self.config, 'enable_internet'):
-            self.config.enable_internet = True
-        if not hasattr(self.config, 'retention_days'):
-            self.config.retention_days = 7
-        if not hasattr(self.config, 'send_to_group'):
-            self.config.send_to_group = True
         
         # 初始化
         self.setup_directories()
@@ -200,7 +187,6 @@ class KagglePlugin(Star):
             temp_dir = self.output_dir / "temp" / output_name
             temp_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"Downloading output for: {username}/{slug} to {temp_dir}")
-            
             try:
                 api.kernels_output(f"{username}/{slug}", path=str(temp_dir))
                 logger.info(f"成功下载输出文件到: {temp_dir}")
@@ -212,26 +198,20 @@ class KagglePlugin(Star):
                 except Exception as e2:
                     logger.error(f"All output download methods failed: {e2}")
                     return None
-            
             files = list(temp_dir.glob('*'))
             logger.info(f"Found {len(files)} output files: {[f.name for f in files]}")
-            
             if not files:
                 logger.warning(f"没有找到输出文件: {notebook_path}")
                 return None
-            
             zip_filename = f"{output_name}.zip"
             zip_path = self.output_dir / zip_filename
-            
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file in temp_dir.rglob('*'):
                     if file.is_file():
                         arcname = file.relative_to(temp_dir)
                         zipf.write(file, arcname)
-            
             logger.info(f"Output packaged: {zip_path}")
             return zip_path
-            
         except Exception as e:
             logger.error(f"打包输出文件失败: {e}")
             return None
@@ -262,29 +242,23 @@ class KagglePlugin(Star):
             return False
 
     async def run_notebook(self, notebook_path: str, notebook_name: str, event: AstrMessageEvent = None) -> Optional[Path]:
-        """运行notebook并返回输出文件路径"""
+        """运行notebook并返回输出文件路径 - 修复路径问题"""
         temp_dir = None
         try:
             api = self.get_kaggle_api()
-            
             if event:
                 await event.send(event.plain_result("🔍 验证notebook是否存在..."))
-            
             # 验证notebook状态
             try:
                 kernel_status = api.kernels_status(notebook_path)
                 status = getattr(kernel_status, 'status', 'unknown')
-                
                 if event:
                     await event.send(event.plain_result(f"📊 Notebook状态: {status}"))
-                
-                # 检查状态是否有效
                 if status in ['CANCEL_ACKNOWLEDGED', 'ERROR', 'FAILED', 'CANCELLED']:
                     if event:
                         await event.send(event.plain_result("❌ Notebook状态无效，可能已被取消或不存在"))
                     logger.warning(f"Notebook状态无效: {status} for {notebook_path}")
                     return None
-                    
             except Exception as e:
                 if "Not Found" in str(e) or "404" in str(e):
                     if event:
@@ -295,44 +269,44 @@ class KagglePlugin(Star):
                     if event:
                         await event.send(event.plain_result(f"⚠️ 验证时出现错误: {str(e)}"))
                     logger.warning(f"验证notebook时出现错误: {e}")
-            
             # 记录运行中的notebook
             if event:
-                session_id = event.get_session_id()
+                session_id = getattr(event, 'session_id', 'default')
                 self.running_notebooks[session_id] = notebook_name
                 logger.info(f"记录运行中的notebook: {notebook_name} (会话ID: {session_id})")
-            
-            if event:
-                await event.send(event.plain_result("📥 正在下载notebook..."))
-            
-            # 1. 首先pull获取notebook
+            # 1. 统一用 kaggle kernels pull -m 下载 notebook 和 metadata
+            import tempfile
+            import subprocess
+            temp_dir = Path(tempfile.mkdtemp(prefix="kaggle_"))
+            logger.info(f"创建临时目录: {temp_dir}")
+            # 校验 notebook_path
+            if not isinstance(notebook_path, str) or '/' not in notebook_path:
+                logger.error(f"notebook_path 格式错误: {notebook_path}")
+                return None
+            username, slug = notebook_path.split('/', 1)
+            if not username or not slug:
+                logger.error(f"notebook_path 拆分失败: {notebook_path}")
+                return None
             try:
-                import tempfile
-                temp_dir = Path(tempfile.mkdtemp(prefix="kaggle_"))
-                logger.info(f"创建临时目录: {temp_dir}")
-                
-                # 下载notebook到临时目录
-                api.kernels_pull(notebook_path, path=str(temp_dir))
-                logger.info(f"成功下载notebook到: {temp_dir}")
-                
-                if event:
-                    await event.send(event.plain_result("✅ Notebook下载完成"))
-                    
+                cmd = [
+                    'kaggle', 'kernels', 'pull',
+                    '-k', f'{username}/{slug}',
+                    '-p', str(temp_dir),
+                    '-m'
+                ]
+                logger.info(f"执行命令: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                logger.info(f"kaggle kernels pull 输出: {result.stdout}")
+                if result.returncode != 0:
+                    logger.error(f"kaggle kernels pull 失败: {result.stderr}")
+                    return None
                 # 检查下载的文件
                 downloaded_files = list(temp_dir.glob('*'))
                 if not downloaded_files:
-                    if event:
-                        await event.send(event.plain_result("❌ 下载的文件为空"))
                     logger.error(f"下载的notebook文件为空: {notebook_path}")
                     return None
-                    
-                if event:
-                    await event.send(event.plain_result(f"📄 下载的文件: {[f.name for f in downloaded_files]}"))
-                    logger.info(f"下载的文件列表: {[f.name for f in downloaded_files]}")
-                    
+                logger.info(f"下载的文件列表: {[f.name for f in downloaded_files]}")
             except Exception as pull_error:
-                if event:
-                    await event.send(event.plain_result(f"❌ 下载notebook失败: {str(pull_error)}"))
                 logger.error(f"下载notebook失败: {pull_error}")
                 return None
             
@@ -372,61 +346,48 @@ class KagglePlugin(Star):
                 # 优化 kernel-metadata.json 生成
                 username, slug = notebook_path.split('/', 1)
                 metadata_path = temp_dir / "kernel-metadata.json"
-
-                # 首先尝试从原始 notebook 获取 datasets
-                dataset_refs = set()
-                try:
-                    # 获取原始 notebook 的信息
-                    kernel_info = api.kernels_status(notebook_path)
-                    logger.info(f"kernel_status返回: {kernel_info}")
-                    
-                    # 不同的 API 响应格式处理
-                    if hasattr(kernel_info, 'datasets'):
-                        # 处理对象格式的响应
-                        datasets = getattr(kernel_info, 'datasets', [])
-                        for ds in datasets:
-                            if hasattr(ds, 'ref'):
-                                dataset_refs.add(ds.ref)
-                            elif hasattr(ds, 'ownerSlug') and hasattr(ds, 'datasetSlug'):
-                                dataset_refs.add(f"{ds.ownerSlug}/{ds.datasetSlug}")
-                    elif isinstance(kernel_info, dict):
-                        # 处理字典格式的响应
-                        datasets = kernel_info.get('datasets', [])
-                        for ds in datasets:
-                            if isinstance(ds, dict):
-                                ref = ds.get('ref') or f"{ds.get('ownerSlug', '')}/{ds.get('datasetSlug', '')}"
-                                if ref and '/' in ref:
-                                    dataset_refs.add(ref)
-                    
-                    logger.info(f"从原始notebook解析到datasets: {list(dataset_refs)}")
-                except Exception as e:
-                    logger.warning(f"获取原始notebook的datasets失败: {e}")
-
-                # 如果从原始notebook没有获取到datasets，尝试使用配置的datasets
-                if not dataset_refs:
-                    config_datasets = getattr(self.config, 'kaggle_datasets', [])
-                    if config_datasets and isinstance(config_datasets, list):
-                        dataset_refs.update([ds for ds in config_datasets if '/' in ds])
-                        logger.info(f"使用config.kaggle_datasets: {list(dataset_refs)}")
-
-                # 构建metadata
+                # 字段顺序更合理，支持自定义额外字段
                 metadata = {
                     "id": f"{username}/{slug}",
                     "title": slug,
                     "code_file": notebook_file.name,
                     "language": "python",
                     "kernel_type": "notebook",
-                    "is_private": False,
-                    "enable_gpu": getattr(self.config, 'enable_gpu', False),
-                    "enable_internet": getattr(self.config, 'enable_internet', True),
-                    "datasets": list(dataset_refs)  # 确保这是非空列表
+                    "is_private": False
                 }
-
+                # 获取原notebook的datasets依赖
+                dataset_refs = set()
+                try:
+                    kernel_info = api.kernel_view(notebook_path)
+                    logger.info(f"kernel_view返回: {kernel_info}")
+                    datasets = []
+                    if hasattr(kernel_info, 'datasets'):
+                        datasets = getattr(kernel_info, 'datasets', [])
+                    elif isinstance(kernel_info, dict):
+                        datasets = kernel_info.get('datasets', [])
+                    logger.info(f"解析到datasets: {datasets}")
+                    for ds in datasets:
+                        if isinstance(ds, dict):
+                            ref = ds.get('ref') or (f"{ds.get('ownerSlug')}/{ds.get('datasetSlug')}")
+                        else:
+                            ref = getattr(ds, 'ref', None) or (f"{getattr(ds, 'ownerSlug', '')}/{getattr(ds, 'datasetSlug', '')}")
+                        if ref and '/' in ref:
+                            dataset_refs.add(ref)
+                    logger.info(f"最终dataset_refs: {dataset_refs}")
+                except Exception as e:
+                    logger.warning(f"获取notebook依赖datasets失败: {e}")
+                # 若dataset_refs为空，兼容用户自定义
+                if not dataset_refs:
+                    config_datasets = getattr(self.config, 'kaggle_datasets', None)
+                    if config_datasets and isinstance(config_datasets, list):
+                        dataset_refs.update(config_datasets)
+                        logger.info(f"使用config.kaggle_datasets: {config_datasets}")
+                # datasets字段始终为非空list
+                metadata["datasets"] = list(dataset_refs)
                 # 支持自定义额外字段
-                extra_metadata = getattr(self.config, 'kaggle_extra_metadata', {})
+                extra_metadata = getattr(self.config, 'kaggle_extra_metadata', None)
                 if extra_metadata and isinstance(extra_metadata, dict):
                     metadata.update(extra_metadata)
-
                 with open(metadata_path, "w", encoding="utf-8") as f:
                     json.dump(metadata, f, indent=2, ensure_ascii=False)
                 logger.info(f"最终写入kernel-metadata.json内容: {metadata}")
@@ -435,9 +396,9 @@ class KagglePlugin(Star):
                 abs_temp_dir = temp_dir.resolve()
                 logger.info(f"准备运行notebook，目录: {abs_temp_dir}")
                 result = api.kernels_push(str(abs_temp_dir))
-                
-                # 检查运行结果
+                # Kaggle API 有时返回 None 但实际已成功，需兼容这种情况
                 status_ok = False
+                # 只要没有抛异常且没有明确 error 字段就认为成功
                 if result is None:
                     status_ok = True
                 elif isinstance(result, dict):
@@ -446,6 +407,7 @@ class KagglePlugin(Star):
                     elif result.get('error'):
                         status_ok = False
                     else:
+                        # 没有 error 字段也视为成功
                         status_ok = True
                 else:
                     if hasattr(result, 'status') and getattr(result, 'status') == 'ok':
@@ -469,7 +431,7 @@ class KagglePlugin(Star):
 
                     # 清理运行记录
                     if event:
-                        session_id = event.get_session_id()
+                        session_id = getattr(event, 'session_id', 'default')
                         if session_id in self.running_notebooks:
                             del self.running_notebooks[session_id]
                             logger.info(f"清理运行记录: {session_id}")
@@ -515,7 +477,7 @@ class KagglePlugin(Star):
 
                     # 清理运行记录
                     if event:
-                        session_id = event.get_session_id()
+                        session_id = getattr(event, 'session_id', 'default')
                         if session_id in self.running_notebooks:
                             del self.running_notebooks[session_id]
                             logger.info(f"清理运行记录: {session_id}")
@@ -530,7 +492,7 @@ class KagglePlugin(Star):
         except Exception as e:
             logger.error(f"运行Notebook失败: {e}", exc_info=True)
             if event:
-                session_id = event.get_session_id()
+                session_id = getattr(event, 'session_id', 'default')
                 if session_id in self.running_notebooks:
                     del self.running_notebooks[session_id]
                 await event.send(event.plain_result(f"❌ 运行失败: {str(e)}"))
@@ -543,6 +505,13 @@ class KagglePlugin(Star):
                     logger.info(f"临时目录已清理: {temp_dir}")
                 except Exception as e:
                     logger.error(f"清理临时目录失败: {e}")
+
+    def should_keep_running(self, message: str) -> bool:
+        """检查消息中是否包含关键词"""
+        message_lower = message.lower()
+        result = any(keyword.lower() in message_lower for keyword in self.config.keywords)
+        logger.debug(f"检查消息是否包含关键词: {message} -> {result}")
+        return result
 
     # 命令注册
     @filter.command_group("kaggle")
@@ -591,24 +560,19 @@ class KagglePlugin(Star):
             api = self.get_kaggle_api()
             yield event.plain_result(f"🔍 检查notebook: {path}")
             logger.info(f"检查notebook状态: {path}")
-            
             if '/' not in path:
                 yield event.plain_result("❌ Notebook路径格式错误，应为: username/slug")
                 logger.error(f"Notebook路径格式错误: {path}")
                 return
-            
             status = api.kernels_status(path)
             status_str = getattr(status, 'status', 'unknown')
             run_count = getattr(status, 'totalRunCount', 0)
             votes = getattr(status, 'totalVotes', 0)
-            
             yield event.plain_result(f"📊 状态: {status_str}")
             yield event.plain_result(f"📈 运行次数: {run_count}")
             yield event.plain_result(f"⭐ 投票数: {votes}")
             yield event.plain_result(f"🔗 链接: https://www.kaggle.com/{path}")
-            
             logger.info(f"Notebook {path} 状态: {status_str}, 运行次数: {run_count}, 投票数: {votes}")
-            
         except Exception as e:
             logger.error(f"检查notebook状态失败: {e}")
             if "Not Found" in str(e) or "404" in str(e):
@@ -638,7 +602,7 @@ class KagglePlugin(Star):
         for i, (name, path) in enumerate(self.notebooks.items(), 1):
             message += f"{i}. {name} -> {path}\n"
         
-        if hasattr(self.config, 'default_notebook') and self.config.default_notebook:
+        if self.config.default_notebook:
             message += f"\n默认notebook: {self.config.default_notebook}"
         
         yield event.plain_result(message)
@@ -647,6 +611,8 @@ class KagglePlugin(Star):
     @kaggle_group.command("add")
     async def kaggle_add(self, event: AstrMessageEvent, name: str, path: str):
         """添加notebook"""
+        # 移除了管理员验证
+        
         if name in self.notebooks:
             yield event.plain_result(f"❌ 名称 '{name}' 已存在")
             logger.warning(f"尝试添加已存在的notebook名称: {name}")
@@ -690,6 +656,8 @@ class KagglePlugin(Star):
     @kaggle_group.command("remove")
     async def kaggle_remove(self, event: AstrMessageEvent, name: str):
         """删除notebook"""
+        # 移除了管理员验证
+        
         # 尝试按名称删除
         if name in self.notebooks:
             del self.notebooks[name]
@@ -715,7 +683,7 @@ class KagglePlugin(Star):
     async def kaggle_run(self, event: AstrMessageEvent, name: str = None):
         """运行notebook"""
         # 使用默认notebook如果未指定
-        if not name and hasattr(self.config, 'default_notebook') and self.config.default_notebook:
+        if not name and self.config.default_notebook:
             name = self.config.default_notebook
         
         if not name:
@@ -736,7 +704,7 @@ class KagglePlugin(Star):
         
         zip_path = await self.run_notebook(notebook_path, notebook_name, event)
         
-        if zip_path and hasattr(self.config, 'send_to_group') and self.config.send_to_group:
+        if zip_path and self.config.send_to_group:
             try:
                 from astrbot.api.message_components import File
                 await event.send(event.chain_result([
