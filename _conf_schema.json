@@ -1,40 +1,43 @@
 {
-  "kaggle_username": {
-    "type": "string",
-    "description": "Kaggle 用户名"
-  },
-  "kaggle_api_key": {
-    "type": "string",
-    "description": "Kaggle API 密钥"
-  },
-  "kaggle_datasets": {
-    "type": "list",
-    "items": {
-      "type": "string"
+  "type": "object",
+  "properties": {
+    "kaggle_username": {
+      "type": "string",
+      "description": "Kaggle 用户名"
     },
-    "description": "默认依赖的数据集列表（如 owner/dataset-slug）"
-  },
-  "kaggle_extra_metadata": {
-    "type": "dict",
-    "description": "kernel-metadata.json 额外自定义字段"
-  },
-  "default_notebook": {
-    "type": "string",
-    "description": "默认 notebook 名称"
-  },
-  "send_to_group": {
-    "type": "bool",
-    "description": "运行完成后是否自动发送输出到群聊"
-  },
-  "retention_days": {
-    "type": "int",
-    "description": "输出文件保留天数"
-  },
-  "keywords": {
-    "type": "list",
-    "items": {
-      "type": "string"
+    "kaggle_api_key": {
+      "type": "string",
+      "description": "Kaggle API 密钥"
     },
-    "description": "触发自动运行的关键词"
+    "kaggle_datasets": {
+      "type": "list",
+      "items": {
+        "type": "string"
+      },
+      "description": "默认依赖的数据集"
+    },
+    "kaggle_extra_metadata": {
+      "type": "object",
+      "description": "kernel-metadata.json 额外字段"
+    },
+    "default_notebook": {
+      "type": "string",
+      "description": "默认 notebook 名称"
+    },
+    "send_to_group": {
+      "type": "bool",
+      "description": "运行结果是否自动发送到群聊"
+    },
+    "retention_days": {
+      "type": "int",
+      "description": "输出文件保留天数"
+    },
+    "keywords": {
+      "type": "list",
+      "items": {
+        "type": "string"
+      },
+      "description": "触发关键词"
+    }
   }
 }
