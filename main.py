@@ -284,40 +284,20 @@ class KagglePlugin(Star):
             
             if event:
                 await event.send(event.plain_result("📥 正在下载notebook..."))
-            # 统一用 kaggle kernels pull -m 下载 notebook 和 metadata
-            import tempfile
-            import subprocess
-            temp_dir = Path(tempfile.mkdtemp(prefix="kaggle_"))
-            logger.info(f"创建临时目录: {temp_dir}")
-            # 校验 notebook_path
-            if not isinstance(notebook_path, str) or '/' not in notebook_path:
-                if event:
-                    await event.send(event.plain_result("❌ notebook_path 格式错误，必须为 username/slug"))
-                logger.error(f"notebook_path 格式错误: {notebook_path}")
-                return None
-            username, slug = notebook_path.split('/', 1)
-            if not username or not slug:
-                if event:
-                    await event.send(event.plain_result("❌ notebook_path 拆分失败"))
-                logger.error(f"notebook_path 拆分失败: {notebook_path}")
-                return None
+            
+            # 1. 首先pull获取notebook
             try:
-                cmd = [
-                    'kaggle', 'kernels', 'pull',
-                    '-k', f'{username}/{slug}',
-                    '-p', str(temp_dir),
-                    '-m'
-                ]
-                logger.info(f"执行命令: {' '.join(cmd)}")
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                logger.info(f"kaggle kernels pull 输出: {result.stdout}")
-                if result.returncode != 0:
-                    logger.error(f"kaggle kernels pull 失败: {result.stderr}")
-                    if event:
-                        await event.send(event.plain_result(f"❌ 下载notebook失败: {result.stderr}"))
-                    return None
+                import tempfile
+                temp_dir = Path(tempfile.mkdtemp(prefix="kaggle_"))
+                logger.info(f"创建临时目录: {temp_dir}")
+                
+                # 下载notebook到临时目录
+                api.kernels_pull(notebook_path, path=str(temp_dir))
+                logger.info(f"成功下载notebook到: {temp_dir}")
+                
                 if event:
-                    await event.send(event.plain_result("✅ Notebook和metadata下载完成"))
+                    await event.send(event.plain_result("✅ Notebook下载完成"))
+                    
                 # 检查下载的文件
                 downloaded_files = list(temp_dir.glob('*'))
                 if not downloaded_files:
@@ -325,9 +305,11 @@ class KagglePlugin(Star):
                         await event.send(event.plain_result("❌ 下载的文件为空"))
                     logger.error(f"下载的notebook文件为空: {notebook_path}")
                     return None
+                    
                 if event:
                     await event.send(event.plain_result(f"📄 下载的文件: {[f.name for f in downloaded_files]}"))
-                logger.info(f"下载的文件列表: {[f.name for f in downloaded_files]}")
+                    logger.info(f"下载的文件列表: {[f.name for f in downloaded_files]}")
+                    
             except Exception as pull_error:
                 if event:
                     await event.send(event.plain_result(f"❌ 下载notebook失败: {str(pull_error)}"))
