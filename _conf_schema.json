@@ -1,42 +1,17 @@
 {
-  "kaggle_username": {
-    "type": "string",
-    "description": "Kaggle 用户名",
-    "hint": "在 Kaggle 账户设置中查看"
-  },
-  "kaggle_api_key": {
-    "type": "string",
-    "description": "Kaggle API Key",
-    "hint": "在 Kaggle 账户设置中生成",
-    "obvious_hint": true
-  },
-  "retention_days": {
-    "type": "int",
-    "description": "文件保留天数",
-    "default": 7,
-    "hint": "输出文件在本地保存的天数"
-  },
-  "default_notebook": {
-    "type": "string",
-    "description": "默认 Notebook",
-    "hint": "运行 /kaggle run 时不指定名称时使用的默认 notebook"
-  },
-  "send_to_group": {
-    "type": "bool",
-    "description": "发送文件到群聊",
-    "default": true,
-    "hint": "是否将输出文件发送到群聊中"
-  },
-  "kaggle_datasets": {
-    "type": "list",
-    "description": "Kaggle 数据集依赖",
-    "default": [],
-    "hint": "Notebook 依赖的数据集列表"
-  },
-  "keywords": {
-    "type": "list",
-    "description": "关键词列表",
-    "default": ["kaggle", "notebook", "运行"],
-    "hint": "用于会话控制的关键词"
+  "type": "object",
+  "properties": {
+    "kaggle_username": {
+      "type": "string",
+      "description": "Kaggle 用户名"
+    },
+    "kaggle_api_key": {
+      "type": "string",
+      "description": "Kaggle API 密钥"
+    },
+    "auto_stop_minutes": {
+      "type": "int",
+      "description": "自动停止运行时间（分钟）"
+    }
   }
 }
