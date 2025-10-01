@@ -238,7 +238,7 @@ class KagglePlugin(Star):
                     enable_gpu=True,
                     enable_internet=True
                 )
-                push_result = api.kernel_push(kernel_push_request)
+                push_result = api.kernels_push(kernel_push_request)
                 logger.info(f"Notebook启动成功: {push_result}")
                 
                 if event:
