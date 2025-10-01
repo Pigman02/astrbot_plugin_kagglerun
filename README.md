@@ -1,2 +1,2 @@
 # astrbot_plugin_kagglerun
-这是说明
+本来想拿来远程启动kaggle部署ai绘图的，然而kaggle api莫得选gpu的功能选不了t4，没办法了
