@@ -1,44 +1,33 @@
 {
   "kaggle_username": {
     "type": "string",
-    "description": "Kaggle账户用户名",
-    "required": true
+    "description": "Kaggle用户名",
+    "hint": "在Kaggle账号设置中查看用户名",
+    "default": ""
   },
   "kaggle_api_key": {
-    "type": "string",
+    "type": "string", 
     "description": "Kaggle API密钥",
-    "required": true
-  },
-  "retention_days": {
-    "type": "integer",
-    "description": "输出文件保留天数",
-    "default": 7
-  },
-  "kaggle_datasets": {
-    "type": "array",
-    "items": {"type": "string"},
-    "description": "默认依赖的Kaggle数据集列表",
-    "default": []
-  },
-  "kaggle_extra_metadata": {
-    "type": "object",
-    "description": "kernel-metadata.json的额外字段",
-    "default": {}
+    "hint": "在Kaggle账号设置中创建API Token获取",
+    "obvious_hint": true,
+    "default": ""
   },
   "default_notebook": {
     "type": "string",
-    "description": "默认notebook名称",
+    "description": "默认Notebook名称",
+    "hint": "当/kaggle run未指定名称时使用此默认notebook",
     "default": ""
   },
-  "send_to_group": {
-    "type": "boolean",
-    "description": "运行结果是否发送到群聊",
-    "default": false
+  "retention_days": {
+    "type": "int",
+    "description": "会话数据保留天数", 
+    "hint": "自动清理多少天前的会话数据",
+    "default": 7
   },
   "keywords": {
-    "type": "array",
-    "items": {"type": "string"},
-    "description": "自动运行的关键词列表",
-    "default": []
+    "type": "list",
+    "description": "触发运行的关键词列表",
+    "hint": "当消息包含这些关键词时会触发notebook运行",
+    "default": ["kaggle", "notebook", "运行"]
   }
 }
