@@ -210,17 +210,34 @@ class KagglePlugin(Star):
                 if event:
                     await event.send(event.plain_result("📥 正在获取notebook代码..."))
                 
-                pull_result = api.kernel_pull(username, slug)
-                logger.info(f"Notebook代码拉取成功: {pull_result}")
+                # 拉取notebook源码和metadata
+                notebook_dir = f"/tmp/{slug}_notebook"
+                os.makedirs(notebook_dir, exist_ok=True)
+                api.kernels_pull(f"{username}/{slug}", path=notebook_dir, metadata=True)
                 
-                # 创建推送请求触发运行，使用拉取的代码
+                # 读取源码内容
+                ipynb_path = os.path.join(notebook_dir, f"{slug}.ipynb")
+                with open(ipynb_path, "r", encoding="utf-8") as f:
+                    notebook_source = f.read()
+                
+                # 读取metadata，补全依赖数据集
+                metadata_path = os.path.join(notebook_dir, "kernel-metadata.json")
+                dataset_sources = []
+                if os.path.exists(metadata_path):
+                    with open(metadata_path, "r", encoding="utf-8") as f:
+                        metadata = json.load(f)
+                        dataset_sources = metadata.get("dataset_sources", [])
+                
+                # 创建推送请求，自动补全依赖
                 kernel_push_request = KernelPushRequest(
                     slug=notebook_path,
-                    text=str(pull_result),  # 使用拉取的代码作为text内容
+                    text=notebook_source,
                     language="python",
-                    kernel_type="notebook"
+                    kernel_type="notebook",
+                    dataset_data_sources=dataset_sources,
+                    enable_gpu=True,
+                    enable_internet=True
                 )
-                
                 push_result = api.kernel_push(kernel_push_request)
                 logger.info(f"Notebook启动成功: {push_result}")
                 
@@ -228,7 +245,6 @@ class KagglePlugin(Star):
                     await event.send(event.plain_result("✅ Notebook已启动运行"))
                     await event.send(event.plain_result("⏳ Kaggle将自动运行该notebook（最多30分钟）"))
                     await event.send(event.plain_result(f"🔗 查看运行状态: https://www.kaggle.com/{notebook_path}"))
-                
                 return True
                 
             except Exception as e:
