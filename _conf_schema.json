@@ -1,44 +1,44 @@
-conf_schema = {
-    "kaggle_username": {
-        "type": "string",
-        "description": "Kaggle账户用户名",
-        "required": True
-    },
-    "kaggle_api_key": {
-        "type": "string",
-        "description": "Kaggle API密钥",
-        "required": True
-    },
-    "retention_days": {
-        "type": "integer",
-        "description": "输出文件保留天数",
-        "default": 7
-    },
-    "kaggle_datasets": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "默认依赖的Kaggle数据集列表",
-        "default": []
-    },
-    "kaggle_extra_metadata": {
-        "type": "object",
-        "description": "kernel-metadata.json的额外字段",
-        "default": {}
-    },
-    "default_notebook": {
-        "type": "string",
-        "description": "默认notebook名称",
-        "default": ""
-    },
-    "send_to_group": {
-        "type": "boolean",
-        "description": "运行结果是否发送到群聊",
-        "default": False
-    },
-    "keywords": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "自动运行的关键词列表",
-        "default": []
-    }
+{
+  "kaggle_username": {
+    "type": "string",
+    "description": "Kaggle账户用户名",
+    "required": true
+  },
+  "kaggle_api_key": {
+    "type": "string",
+    "description": "Kaggle API密钥",
+    "required": true
+  },
+  "retention_days": {
+    "type": "integer",
+    "description": "输出文件保留天数",
+    "default": 7
+  },
+  "kaggle_datasets": {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": "默认依赖的Kaggle数据集列表",
+    "default": []
+  },
+  "kaggle_extra_metadata": {
+    "type": "object",
+    "description": "kernel-metadata.json的额外字段",
+    "default": {}
+  },
+  "default_notebook": {
+    "type": "string",
+    "description": "默认notebook名称",
+    "default": ""
+  },
+  "send_to_group": {
+    "type": "boolean",
+    "description": "运行结果是否发送到群聊",
+    "default": false
+  },
+  "keywords": {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": "自动运行的关键词列表",
+    "default": []
+  }
 }
