@@ -206,10 +206,19 @@ class KagglePlugin(Star):
             try:
                 from kaggle.models.kernel_push_request import KernelPushRequest
                 
-                # 创建推送请求触发运行
+                # 先拉取notebook的源代码
+                if event:
+                    await event.send(event.plain_result("📥 正在获取notebook代码..."))
+                
+                pull_result = api.kernel_pull(username, slug)
+                logger.info(f"Notebook代码拉取成功: {pull_result}")
+                
+                # 创建推送请求触发运行，使用拉取的代码
                 kernel_push_request = KernelPushRequest(
                     slug=notebook_path,
-                    # 不提供text字段，使用notebook现有代码
+                    text=str(pull_result),  # 使用拉取的代码作为text内容
+                    language="python",
+                    kernel_type="notebook"
                 )
                 
                 push_result = api.kernel_push(kernel_push_request)
