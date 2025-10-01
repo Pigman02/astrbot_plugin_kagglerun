@@ -210,42 +210,11 @@ class KagglePlugin(Star):
                 if event:
                     await event.send(event.plain_result("📥 正在获取notebook代码..."))
                 
-                # 拉取notebook源码和metadata
+                # 拉取notebook源码和metadata（API自动处理）
                 notebook_dir = f"/tmp/{slug}_notebook"
                 os.makedirs(notebook_dir, exist_ok=True)
                 api.kernels_pull(f"{username}/{slug}", path=notebook_dir, metadata=True)
-                
-                # 读取源码内容
-                ipynb_path = os.path.join(notebook_dir, f"{slug}.ipynb")
-                with open(ipynb_path, "r", encoding="utf-8") as f:
-                    notebook_source = f.read()
-                
-                # 读取metadata，补全依赖数据集
-                metadata_path = os.path.join(notebook_dir, "kernel-metadata.json")
-                dataset_sources = []
-                if os.path.exists(metadata_path):
-                    with open(metadata_path, "r", encoding="utf-8") as f:
-                        metadata = json.load(f)
-                        dataset_sources = metadata.get("dataset_sources", [])
-                
-                # 更新metadata文件，确保依赖、配置项写入
-                metadata = {
-                    "id": notebook_path,
-                    "title": notebook_name,
-                    "code_file": f"{slug}.ipynb",
-                    "language": "python",
-                    "kernel_type": "notebook",
-                    "is_private": False,
-                    "enable_gpu": True,
-                    "enable_internet": True,
-                    "dataset_sources": dataset_sources,
-                    "competition_sources": [],
-                    "kernel_sources": [],
-                    "model_sources": []
-                }
-                with open(metadata_path, "w", encoding="utf-8") as f:
-                    json.dump(metadata, f, ensure_ascii=False, indent=2)
-                # 推送整个目录
+                # 直接推送整个目录，使用原始metadata
                 push_result = api.kernels_push(notebook_dir)
                 logger.info(f"Notebook启动成功: {push_result}")
                 
