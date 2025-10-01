@@ -246,7 +246,7 @@ class KagglePlugin(Star):
                 with open(metadata_path, "w", encoding="utf-8") as f:
                     json.dump(metadata, f, ensure_ascii=False, indent=2)
                 # 推送整个目录
-                push_result = api.kernels_push(path=notebook_dir)
+                push_result = api.kernels_push(notebook_dir)
                 logger.info(f"Notebook启动成功: {push_result}")
                 
                 if event:
