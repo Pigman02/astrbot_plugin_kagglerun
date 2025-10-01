@@ -228,17 +228,25 @@ class KagglePlugin(Star):
                         metadata = json.load(f)
                         dataset_sources = metadata.get("dataset_sources", [])
                 
-                # 创建推送请求，自动补全依赖
-                kernel_push_request = KernelPushRequest(
-                    slug=notebook_path,
-                    text=notebook_source,
-                    language="python",
-                    kernel_type="notebook",
-                    dataset_data_sources=dataset_sources,
-                    enable_gpu=True,
-                    enable_internet=True
-                )
-                push_result = api.kernels_push(kernel_push_request)
+                # 更新metadata文件，确保依赖、配置项写入
+                metadata = {
+                    "id": notebook_path,
+                    "title": notebook_name,
+                    "code_file": f"{slug}.ipynb",
+                    "language": "python",
+                    "kernel_type": "notebook",
+                    "is_private": False,
+                    "enable_gpu": True,
+                    "enable_internet": True,
+                    "dataset_sources": dataset_sources,
+                    "competition_sources": [],
+                    "kernel_sources": [],
+                    "model_sources": []
+                }
+                with open(metadata_path, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, ensure_ascii=False, indent=2)
+                # 推送整个目录
+                push_result = api.kernels_push(path=notebook_dir)
                 logger.info(f"Notebook启动成功: {push_result}")
                 
                 if event:
