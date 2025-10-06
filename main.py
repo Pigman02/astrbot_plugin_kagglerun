@@ -1,446 +1,360 @@
-import os
-import json
-import asyncio
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
-from pathlib import Path
-
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
+from astrbot.api import AstrBotConfig
+import asyncio
+import threading
+import json
+import os
+import time as time_module
+from datetime import datetime, timedelta
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
-class KagglePlugin(Star):
-    def get_kaggle_api(self):
-        """统一获取 KaggleApi 实例并认证"""
-        try:
-            from kaggle.api.kaggle_api_extended import KaggleApi
-        except ImportError as e:
-            logger.error(f"未安装kaggle库: {e}")
-            raise
-        api = KaggleApi()
-        try:
-            api.authenticate()
-        except Exception as e:
-            logger.error(f"Kaggle API认证失败: {e}")
-            raise
-        return api
-
-    def __init__(self, context: Context, config):
+@register("kaggle runner", "Developer", "Kaggle Notebook 运行器", "1.0.0")
+class KaggleRunnerPlugin(Star):
+    def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
-        self.active_sessions: Dict[str, datetime] = {}
-        self.running_notebooks: Dict[str, str] = {}
-        # 修改存储路径为相对路径
-        self.plugin_data_dir = Path("data/plugin_data/astrbot_plugin_kagglerun")
-        self.notebooks_file = self.plugin_data_dir / "kaggle_notebooks.json"
-        self.notebooks: Dict[str, str] = {}
-        self.cleanup_task = None
+        self.running_tasks = {}
+        self.task_start_time = {}
+        self.keyword_refresh_times = {}
+        self.notebooks_file = os.path.join("data", "kaggle_notebooks.json")
+        self._ensure_data_dir()
+        self._load_notebooks()
         
-        # 初始化
-        self.setup_directories()
-        self.setup_kaggle_api()
-        self.load_notebooks()
-        self.start_cleanup_task()
-
-    def setup_directories(self):
-        """设置目录"""
+        # 启动自动停止检测任务
+        asyncio.create_task(self._auto_stop_monitor())
+    
+    def _ensure_data_dir(self):
+        """确保数据目录存在"""
+        data_dir = os.path.dirname(self.notebooks_file)
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+    
+    def _load_notebooks(self):
+        """加载保存的 notebooks"""
         try:
-            self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
-            logger.info(f"插件目录设置完成: {self.plugin_data_dir}")
-        except Exception as e:
-            logger.error(f"设置目录失败: {e}")
-
-    def setup_kaggle_api(self):
-        """设置Kaggle API配置"""
-        try:
-            kaggle_dir = os.path.expanduser('~/.kaggle')
-            os.makedirs(kaggle_dir, exist_ok=True)
-            
-            kaggle_config = {
-                "username": self.config.kaggle_username,
-                "key": self.config.kaggle_api_key
-            }
-            
-            config_path = os.path.join(kaggle_dir, 'kaggle.json')
-            with open(config_path, 'w') as f:
-                json.dump(kaggle_config, f)
-            os.chmod(config_path, 0o600)
-            
-            logger.info("Kaggle API配置完成")
-        except Exception as e:
-            logger.error(f"Kaggle API配置失败: {e}")
-
-    def start_cleanup_task(self):
-        """启动清理任务"""
-        self.cleanup_task = asyncio.create_task(self.cleanup_old_sessions())
-
-    async def cleanup_old_sessions(self):
-        """清理旧会话任务"""
-        while True:
-            try:
-                await asyncio.sleep(3600)  # 每小时检查一次
-                
-                cutoff_time = datetime.now() - timedelta(hours=24)
-                expired_sessions = []
-                
-                for session_id, last_active in self.active_sessions.items():
-                    if last_active < cutoff_time:
-                        expired_sessions.append(session_id)
-                
-                for session_id in expired_sessions:
-                    del self.active_sessions[session_id]
-                    logger.info(f"已清理过期会话: {session_id}")
-                    
-            except asyncio.CancelledError:
-                logger.info("清理任务已取消")
-                break
-            except Exception as e:
-                logger.error(f"清理会话失败: {e}")
-                await asyncio.sleep(300)
-
-    def load_notebooks(self):
-        """加载notebook列表"""
-        try:
-            if self.notebooks_file.exists():
+            if os.path.exists(self.notebooks_file):
                 with open(self.notebooks_file, 'r', encoding='utf-8') as f:
                     self.notebooks = json.load(f)
-                logger.info(f"已加载 {len(self.notebooks)} 个notebook")
             else:
                 self.notebooks = {}
-                self.save_notebooks()
         except Exception as e:
-            logger.error(f"加载notebook列表失败: {e}")
+            logger.error(f"加载 notebooks 失败: {e}")
             self.notebooks = {}
-
-    def save_notebooks(self):
-        """保存notebook列表"""
+    
+    def _save_notebooks(self):
+        """保存 notebooks 到文件"""
         try:
-            self.notebooks_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.notebooks_file, 'w', encoding='utf-8') as f:
                 json.dump(self.notebooks, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.error(f"保存notebook列表失败: {e}")
-
-    def get_notebook_by_identifier(self, identifier) -> Optional[Tuple[str, str]]:
-        """通过序号或名称获取notebook"""
-        try:
-            # 确保identifier是字符串类型
-            identifier = str(identifier)
-            
-            # 尝试按序号查找
-            if identifier.isdigit():
-                index = int(identifier) - 1
-                notebooks_list = list(self.notebooks.items())
-                if 0 <= index < len(notebooks_list):
-                    return notebooks_list[index]
-            
-            # 尝试按名称查找
-            if identifier in self.notebooks:
-                return (identifier, self.notebooks[identifier])
-            
-            # 尝试模糊匹配
-            for name, path in self.notebooks.items():
-                if identifier.lower() in name.lower():
-                    return (name, path)
-            
-            return None
-        except Exception as e:
-            logger.error(f"获取notebook失败: {e}")
-            return None
-
-    async def stop_kaggle_notebook(self, notebook_path: str) -> bool:
-        """强制停止运行的notebook"""
-        try:
-            api = self.get_kaggle_api()
-            if '/' not in notebook_path:
-                return False
-            username, slug = notebook_path.split('/', 1)
-            kernels = api.kernels_list()
-            for kernel in kernels:
-                kernel_ref = getattr(kernel, 'ref', '')
-                if kernel_ref == f"{username}/{slug}":
-                    kernel_id = getattr(kernel, 'id', '')
-                    if kernel_id:
-                        api.kernels_stop(kernel_id)
-                        return True
-            return False
-        except Exception as e:
-            logger.error(f"停止notebook失败: {e}")
-            return False
-
-    def validate_notebook_path(self, notebook_path: str) -> bool:
-        """验证notebook路径是否有效"""
-        try:
-            api = self.get_kaggle_api()
-            if '/' not in notebook_path:
-                logger.error(f"Notebook路径格式错误: {notebook_path}")
-                return False
-            status = api.kernels_status(notebook_path)
-            if status:
-                logger.info(f"Notebook验证成功: {notebook_path}")
-                return True
-            else:
-                logger.error(f"Notebook验证失败，返回空状态: {notebook_path}")
-                return False
-        except Exception as e:
-            logger.error(f"验证notebook路径失败: {e}")
-            return False
-
-    async def run_notebook(self, notebook_path: str, notebook_name: str, event: AstrMessageEvent = None) -> bool:
-        """远程启动notebook运行"""
-        try:
-            api = self.get_kaggle_api()
-            
-            if '/' not in notebook_path:
-                logger.error(f"Invalid notebook path: {notebook_path}")
-                if event:
-                    await event.send(event.plain_result("❌ Notebook路径格式错误"))
-                return False
-                
-            username, slug = notebook_path.split('/', 1)
-            
-            if event:
-                await event.send(event.plain_result("🚀 正在远程启动notebook..."))
-            
-            # 使用KernelPushRequest触发notebook运行
+            logger.error(f"保存 notebooks 失败: {e}")
+    
+    async def _auto_stop_monitor(self):
+        """自动停止监控任务"""
+        while True:
             try:
-                from kaggle.models.kernel_push_request import KernelPushRequest
+                current_time = datetime.now()
+                auto_stop_minutes = self.config.get("auto_stop_minutes", 30)
                 
-                # 先拉取notebook的源代码
-                if event:
-                    await event.send(event.plain_result("📥 正在获取notebook代码..."))
+                users_to_stop = []
+                for user_id, start_time in self.task_start_time.items():
+                    if (current_time - start_time) > timedelta(minutes=auto_stop_minutes):
+                        users_to_stop.append(user_id)
                 
-                # 拉取notebook源码和metadata（API自动处理）
-                notebook_dir = f"/tmp/{slug}_notebook"
-                os.makedirs(notebook_dir, exist_ok=True)
-                api.kernels_pull(f"{username}/{slug}", path=notebook_dir, metadata=True)
-                # 直接推送整个目录，使用原始metadata
-                push_result = api.kernels_push(notebook_dir)
-                logger.info(f"Notebook启动成功: {push_result}")
-                
-                if event:
-                    await event.send(event.plain_result("✅ Notebook已启动运行"))
-                    await event.send(event.plain_result("⏳ Kaggle将自动运行该notebook（最多30分钟）"))
-                    await event.send(event.plain_result(f"🔗 查看运行状态: https://www.kaggle.com/{notebook_path}"))
-                return True
-                
+                for user_id in users_to_stop:
+                    if user_id in self.running_tasks:
+                        logger.info(f"自动停止用户 {user_id} 的任务（运行超过 {auto_stop_minutes} 分钟）")
+                        del self.running_tasks[user_id]
+                        del self.task_start_time[user_id]
+                        # 这里可以发送通知消息
+                        
             except Exception as e:
-                logger.error(f"启动notebook失败: {e}")
-                if event:
-                    await event.send(event.plain_result(f"❌ 启动失败: {str(e)}"))
-                return False
-                
-        except Exception as e:
-            logger.error(f"运行Notebook失败: {e}")
-            if event:
-                await event.send(event.plain_result(f"❌ 运行失败: {str(e)}"))
-            return False
-
-    def should_keep_running(self, message: str) -> bool:
-        """检查消息中是否包含关键词"""
-        message_lower = message.lower()
-        result = any(keyword.lower() in message_lower for keyword in self.config.keywords)
-        logger.debug(f"检查消息是否包含关键词: {message} -> {result}")
-        return result
-
-    async def terminate(self):
-        """插件卸载时调用"""
-        if self.cleanup_task:
-            self.cleanup_task.cancel()
-            try:
-                await self.cleanup_task
-            except asyncio.CancelledError:
-                pass
-
-    # 命令注册
-    @filter.command_group("kaggle")
-    def kaggle_group(self):
-        """Kaggle命令组"""
-        pass
-
-    @kaggle_group.command("")
-    async def kaggle_main(self, event: AstrMessageEvent):
-        """Kaggle主命令"""
-        yield event.plain_result(
-            "📋 Kaggle Notebook管理器\n\n"
-            "可用命令:\n"
-            "/kaggle list - 查看可用notebook\n"
-            "/kaggle add <名称> <路径> - 添加notebook\n"
-            "/kaggle remove <名称> - 删除notebook\n"
-            "/kaggle run [名称] - 运行notebook\n"
-            "/kaggle off - 停止运行\n"
-            "/kaggle status - 查看状态\n"
-            "/kaggle config - 查看配置\n"
-            "/kaggle test - 测试API连接\n"
-            "/kaggle check <路径> - 检查notebook状态"
-        )
-
-    @kaggle_group.command("test")
-    async def kaggle_test(self, event: AstrMessageEvent):
-        """测试Kaggle API连接"""
-        try:
-            api = self.get_kaggle_api()
-            kernels = api.kernels_list(page_size=5)
-            if kernels:
-                yield event.plain_result("✅ Kaggle API连接正常")
-                logger.info("Kaggle API连接测试成功")
-            else:
-                yield event.plain_result("⚠️ API连接正常但未找到notebooks")
-                logger.warning("Kaggle API连接正常但未找到notebooks")
-        except Exception as e:
-            yield event.plain_result(f"❌ API连接失败: {str(e)}")
-            logger.error(f"Kaggle API连接测试失败: {e}")
-
-    @kaggle_group.command("check")
-    async def kaggle_check(self, event: AstrMessageEvent, path: str):
-        """检查notebook状态"""
-        try:
-            api = self.get_kaggle_api()
-            yield event.plain_result(f"🔍 检查notebook: {path}")
-            logger.info(f"检查notebook状态: {path}")
-            if '/' not in path:
-                yield event.plain_result("❌ Notebook路径格式错误，应为: username/slug")
-                logger.error(f"Notebook路径格式错误: {path}")
-                return
-            status = api.kernels_status(path)
-            status_str = getattr(status, 'status', 'unknown')
-            run_count = getattr(status, 'totalRunCount', 0)
-            votes = getattr(status, 'totalVotes', 0)
-            yield event.plain_result(f"📊 状态: {status_str}")
-            yield event.plain_result(f"📈 运行次数: {run_count}")
-            yield event.plain_result(f"⭐ 投票数: {votes}")
-            yield event.plain_result(f"🔗 链接: https://www.kaggle.com/{path}")
-            logger.info(f"Notebook {path} 状态: {status_str}, 运行次数: {run_count}, 投票数: {votes}")
-        except Exception as e:
-            logger.error(f"检查notebook状态失败: {e}")
-            if "Not Found" in str(e) or "404" in str(e):
-                yield event.plain_result(f"❌ Notebook不存在: {path}")
-                logger.error(f"Notebook不存在: {path}")
-            elif "403" in str(e) or "Forbidden" in str(e):
-                yield event.plain_result(f"❌ 访问被拒绝: {path}")
-                yield event.plain_result("💡 可能的原因: 1.notebook不是公开的 2.API密钥权限不足 3.账号未验证邮箱")
-                logger.error(f"访问被拒绝: {path}")
-            elif "Invalid folder" in str(e):
-                yield event.plain_result(f"❌ Notebook路径无效: {path}")
-                yield event.plain_result("💡 请确认用户名和slug是否正确")
-                logger.error(f"Notebook路径无效: {path}")
-            else:
-                yield event.plain_result(f"❌ 检查失败: {str(e)}")
-                logger.error(f"检查notebook失败: {e}")
-
-    @kaggle_group.command("list")
-    async def kaggle_list(self, event: AstrMessageEvent):
-        """列出所有notebook"""
-        if not self.notebooks:
-            yield event.plain_result("📝 还没有添加任何notebook")
-            logger.info("Notebook列表为空")
-            return
-        
-        message = "📋 Notebook列表:\n"
-        for i, (name, path) in enumerate(self.notebooks.items(), 1):
-            message += f"{i}. {name} -> {path}\n"
-        
-        if self.config.default_notebook:
-            message += f"\n默认notebook: {self.config.default_notebook}"
-        
-        yield event.plain_result(message)
-        logger.info(f"列出notebook列表，共{len(self.notebooks)}个")
-
-    @kaggle_group.command("add")
-    async def kaggle_add(self, event: AstrMessageEvent, name: str, path: str):
-        """添加notebook"""
+                logger.error(f"自动停止监控错误: {e}")
+            
+            await asyncio.sleep(60)  # 每分钟检查一次
+    
+    def _refresh_task_time(self, user_id: str):
+        """刷新任务时间（当检测到关键词时调用）"""
+        self.task_start_time[user_id] = datetime.now()
+        logger.info(f"用户 {user_id} 的任务时间已刷新")
+    
+    @filter.command("kaggle add")
+    async def kaggle_add(self, event: AstrMessageEvent, name: str, notebook_slug: str):
+        """添加 Kaggle notebook 到收藏
+        用法: /kaggle add <name> <notebook_slug>
+        示例: /kaggle add sd-bot username/stable-diffusion-bot
+        """
         if name in self.notebooks:
             yield event.plain_result(f"❌ 名称 '{name}' 已存在")
-            logger.warning(f"尝试添加已存在的notebook名称: {name}")
             return
         
-        # 验证notebook路径格式
-        if '/' not in path:
-            yield event.plain_result("❌ Notebook路径格式错误，应为: username/slug")
-            logger.error(f"Notebook路径格式错误: {path}")
-            return
+        self.notebooks[name] = notebook_slug
+        self._save_notebooks()
         
-        # 验证notebook路径是否有效
-        yield event.plain_result("🔍 验证notebook路径...")
-        logger.info(f"验证notebook路径: {path}")
-        
-        try:
-            api = self.get_kaggle_api()
-            status = api.kernels_status(path)
-            if status:
-                self.notebooks[name] = path
-                self.save_notebooks()
-                yield event.plain_result(f"✅ 已添加: {name} -> {path}")
-                yield event.plain_result(f"🔗 链接: https://www.kaggle.com/{path}")
-                logger.info(f"成功添加notebook: {name} -> {path}")
-            else:
-                yield event.plain_result(f"❌ Notebook验证失败: {path}")
-                logger.error(f"Notebook验证失败: {path}")
-        except Exception as e:
-            logger.error(f"添加notebook失败: {e}")
-            if "Not Found" in str(e) or "404" in str(e):
-                yield event.plain_result(f"❌ Notebook不存在: {path}")
-                logger.error(f"Notebook不存在: {path}")
-            elif "Invalid folder" in str(e):
-                yield event.plain_result(f"❌ Notebook路径无效: {path}")
-                yield event.plain_result("💡 请确认用户名和slug是否正确")
-                logger.error(f"Notebook路径无效: {path}")
-            else:
-                yield event.plain_result(f"❌ 验证失败: {str(e)}")
-                logger.error(f"Notebook验证失败: {e}")
-
-    @kaggle_group.command("remove")
+        yield event.plain_result(f"✅ 已添加 notebook: {name} -> {notebook_slug}")
+    
+    @filter.command("kaggle remove")
     async def kaggle_remove(self, event: AstrMessageEvent, name: str):
-        """删除notebook"""
-        # 尝试按名称删除
-        if name in self.notebooks:
-            del self.notebooks[name]
-            self.save_notebooks()
-            yield event.plain_result(f"✅ 已删除: {name}")
-            logger.info(f"成功删除notebook: {name}")
+        """从收藏中移除 Kaggle notebook
+        用法: /kaggle remove <name>
+        示例: /kaggle remove sd-bot
+        """
+        if name not in self.notebooks:
+            yield event.plain_result(f"❌ 未找到名称 '{name}'")
             return
         
-        # 尝试按序号删除
-        notebook_info = self.get_notebook_by_identifier(name)
-        if notebook_info:
-            notebook_name, _ = notebook_info
-            del self.notebooks[notebook_name]
-            self.save_notebooks()
-            yield event.plain_result(f"✅ 已删除: {notebook_name}")
-            logger.info(f"成功删除notebook: {notebook_name}")
+        removed_slug = self.notebooks.pop(name)
+        self._save_notebooks()
+        
+        yield event.plain_result(f"✅ 已移除 notebook: {name} ({removed_slug})")
+    
+    @filter.command("kaggle list")
+    async def kaggle_list(self, event: AstrMessageEvent):
+        """列出所有收藏的 Kaggle notebooks"""
+        if not self.notebooks:
+            yield event.plain_result("📝 暂无收藏的 notebooks")
             return
         
-        yield event.plain_result("❌ 未找到指定的notebook")
-        logger.warning(f"尝试删除不存在的notebook: {name}")
-
-    @kaggle_group.command("run")
-    async def kaggle_run(self, event: AstrMessageEvent, name: str = None):
-        """运行notebook"""
-        # 使用默认notebook如果未指定
-        if not name and self.config.default_notebook:
-            name = self.config.default_notebook
+        result = "📚 收藏的 Kaggle notebooks:\n"
+        for name, slug in self.notebooks.items():
+            result += f"• {name}: {slug}\n"
         
-        if not name:
-            yield event.plain_result("❌ 请指定notebook名称或设置默认notebook")
-            logger.warning("未指定notebook名称且无默认notebook")
+        yield event.plain_result(result)
+    
+    @filter.command("kaggle run")
+    async def kaggle_run(self, event: AstrMessageEvent, name: str = None, notebook_slug: str = None):
+        """运行 Kaggle notebook
+        用法: /kaggle run [name] 或 /kaggle run <notebook_slug>
+        示例: /kaggle run sd-bot 或 /kaggle run username/notebook-name
+        """
+        user_id = event.get_sender_id()
+        
+        # 检查是否已有任务在运行
+        if user_id in self.running_tasks and self.running_tasks[user_id].is_alive():
+            yield event.plain_result("❌ 您已有一个任务正在运行，请等待完成")
             return
         
-        notebook_info = self.get_notebook_by_identifier(name)
-        if not notebook_info:
-            yield event.plain_result("❌ Notebook不存在")
-            logger.warning(f"尝试运行不存在的notebook: {name}")
-            return
-        
-        notebook_name, notebook_path = notebook_info
-        logger.info(f"开始运行notebook: {notebook_name} ({notebook_path})")
-        
-        success = await self.run_notebook(notebook_path, notebook_name, event)
-        
-        if success:
-            logger.info(f"Notebook启动成功: {notebook_name}")
+        # 确定要运行的 notebook
+        target_slug = None
+        if name:
+            if name in self.notebooks:
+                target_slug = self.notebooks[name]
+            else:
+                yield event.plain_result(f"❌ 未找到名称 '{name}'，使用 /kaggle list 查看所有收藏")
+                return
+        elif notebook_slug:
+            target_slug = notebook_slug
         else:
-            logger.error(f"Notebook启动失败: {notebook_name}")
-
-@register("kaggle_runner", "AstrBot", "Kaggle Notebook执行插件", "1.0.0")
-class KaggleRunner(KagglePlugin):
-    pass
+            yield event.plain_result("❌ 请提供 notebook 名称或完整链接")
+            return
+        
+        # 检查账号配置
+        email = self.config.get("kaggle_email", "")
+        password = self.config.get("kaggle_password", "")
+        if not email or not password:
+            yield event.plain_result("❌ 请先在 WebUI 中配置 Kaggle 账号和密码")
+            return
+        
+        yield event.plain_result(f"🚀 开始运行 Kaggle notebook: {target_slug}")
+        
+        def run_callback(success, message):
+            # 在事件循环中发送结果
+            asyncio.run_coroutine_threadsafe(
+                self._send_callback_result(event, message, user_id), 
+                asyncio.get_event_loop()
+            )
+        
+        # 在新线程中运行
+        task = threading.Thread(
+            target=self._run_kaggle_notebook,
+            args=(target_slug, run_callback)
+        )
+        task.daemon = True
+        task.start()
+        
+        self.running_tasks[user_id] = task
+        self.task_start_time[user_id] = datetime.now()
+        
+        auto_stop_minutes = self.config.get("auto_stop_minutes", 30)
+        yield event.plain_result(f"⏳ 任务已启动，正在后台运行...\n⏰ 自动停止时间: {auto_stop_minutes} 分钟")
+    
+    def _run_kaggle_notebook(self, notebook_slug: str, callback):
+        """在单独线程中运行 Kaggle notebook"""
+        try:
+            # 从配置中获取账号信息
+            email = self.config.get("kaggle_email", "")
+            password = self.config.get("kaggle_password", "")
+            
+            if not email or not password:
+                callback(False, "❌ 请先在 WebUI 中配置 Kaggle 账号和密码")
+                return
+            
+            profile_dir = os.path.join(os.getcwd(), "kaggle_profile")
+            
+            options = Options()
+            options.add_argument(f"--user-data-dir={profile_dir}")
+            options.add_argument("--headless")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--window-size=1920,1080")
+            options.add_argument("--disable-extensions")
+            options.add_argument("--disable-images")
+            
+            driver = webdriver.Chrome(options=options)
+            
+            try:
+                logger.info(f"开始运行 Kaggle notebook: {notebook_slug}")
+                
+                # 登录检测
+                driver.get("https://www.kaggle.com/account/login?phase=emailSignIn")
+                time_module.sleep(5)
+                
+                current_url = driver.current_url
+                
+                if "login" in current_url:
+                    email_input = WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.NAME, "email"))
+                    )
+                    email_input.send_keys(email)
+                    
+                    password_input = driver.find_element(By.NAME, "password")
+                    password_input.send_keys(password)
+                    
+                    login_button = driver.find_element(By.XPATH, "//button[@type='submit']")
+                    login_button.click()
+                    
+                    WebDriverWait(driver, 15).until(
+                        lambda d: "login" not in d.current_url
+                    )
+                    logger.info("Kaggle 登录成功")
+                
+                # 运行 notebook - 使用基础的编辑页面
+                notebook_url = f"https://www.kaggle.com/code/{notebook_slug}"
+                driver.get(notebook_url)
+                time_module.sleep(10)
+                
+                # 尝试找到并点击运行按钮
+                run_selectors = [
+                    "//button[contains(., 'Run')]",
+                    "//button[contains(., '运行')]",
+                    "//button[contains(@class, 'run')]",
+                    "//span[contains(., 'Run')]/parent::button",
+                    "//span[contains(., '运行')]/parent::button"
+                ]
+                
+                run_button = None
+                for selector in run_selectors:
+                    try:
+                        run_button = WebDriverWait(driver, 10).until(
+                            EC.element_to_be_clickable((By.XPATH, selector))
+                        )
+                        logger.info(f"找到运行按钮: {selector}")
+                        break
+                    except:
+                        continue
+                
+                if run_button:
+                    driver.execute_script("arguments[0].click();", run_button)
+                    logger.info("点击运行按钮成功")
+                    time_module.sleep(5)
+                    
+                    callback(True, f"✅ Kaggle notebook '{notebook_slug}' 已开始运行！")
+                else:
+                    callback(False, f"❌ 未找到运行按钮，请检查 notebook 链接")
+                
+            except Exception as e:
+                logger.error(f"Kaggle 运行错误: {e}")
+                callback(False, f"❌ 运行失败: {str(e)}")
+                
+            finally:
+                driver.quit()
+                
+        except Exception as e:
+            logger.error(f"浏览器启动错误: {e}")
+            callback(False, f"❌ 浏览器启动失败: {str(e)}")
+    
+    async def _send_callback_result(self, event: AstrMessageEvent, message: str, user_id: str):
+        """发送回调结果"""
+        if user_id in self.running_tasks:
+            del self.running_tasks[user_id]
+        if user_id in self.task_start_time:
+            del self.task_start_time[user_id]
+        
+        # 使用主动消息发送结果
+        await self.context.send_message(
+            event.unified_msg_origin,
+            message
+        )
+    
+    @filter.command("kaggle stop")
+    async def kaggle_stop(self, event: AstrMessageEvent):
+        """停止当前用户的 Kaggle 任务"""
+        user_id = event.get_sender_id()
+        
+        if user_id in self.running_tasks:
+            yield event.plain_result("🛑 正在停止任务...")
+            if user_id in self.running_tasks:
+                del self.running_tasks[user_id]
+            if user_id in self.task_start_time:
+                del self.task_start_time[user_id]
+            yield event.plain_result("✅ 任务已停止")
+        else:
+            yield event.plain_result("❌ 没有正在运行的任务")
+    
+    @filter.command("kaggle status")
+    async def kaggle_status(self, event: AstrMessageEvent):
+        """查看当前运行状态"""
+        user_id = event.get_sender_id()
+        
+        if user_id in self.running_tasks and self.running_tasks[user_id].is_alive():
+            if user_id in self.task_start_time:
+                elapsed = datetime.now() - self.task_start_time[user_id]
+                elapsed_minutes = int(elapsed.total_seconds() / 60)
+                auto_stop_minutes = self.config.get("auto_stop_minutes", 30)
+                remaining_minutes = max(0, auto_stop_minutes - elapsed_minutes)
+                
+                yield event.plain_result(f"🟢 有任务正在运行中...\n⏰ 已运行: {elapsed_minutes} 分钟，剩余: {remaining_minutes} 分钟")
+            else:
+                yield event.plain_result("🟢 有任务正在运行中...")
+        else:
+            yield event.plain_result("🔴 当前没有运行任务")
+    
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def on_group_message(self, event: AstrMessageEvent):
+        """监听群聊消息，检测关键词刷新任务时间"""
+        user_id = event.get_sender_id()
+        
+        # 检查用户是否有运行中的任务
+        if user_id in self.running_tasks and self.running_tasks[user_id].is_alive():
+            message_text = event.message_str.lower()
+            
+            # 从配置中获取刷新关键词
+            refresh_keywords = self.config.get("refresh_keywords", "运行中,训练中,processing,training")
+            keyword_list = [kw.strip().lower() for kw in refresh_keywords.split(",")]
+            
+            # 检查是否包含关键词
+            for keyword in keyword_list:
+                if keyword and keyword in message_text:
+                    self._refresh_task_time(user_id)
+                    
+                    # 发送刷新通知（可选）
+                    auto_stop_minutes = self.config.get("auto_stop_minutes", 30)
+                    # await self.context.send_message(
+                    #     event.unified_msg_origin,
+                    #     f"⏰ 检测到关键词 '{keyword}'，任务时间已刷新，剩余 {auto_stop_minutes} 分钟"
+                    # )
+                    break
+    
+    async def terminate(self):
+        """插件卸载时清理资源"""
+        logger.info("Kaggle Runner 插件正在卸载...")
+        for task in self.running_tasks.values():
+            if task.is_alive():
+                task.join(timeout=5)
