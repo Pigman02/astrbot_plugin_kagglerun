@@ -1,33 +1,26 @@
 {
-  "kaggle_username": {
+  "kaggle_email": {
+    "description": "Kaggle 邮箱",
     "type": "string",
-    "description": "Kaggle用户名",
-    "hint": "在Kaggle账号设置中查看用户名",
+    "hint": "用于登录 Kaggle 的邮箱地址",
     "default": ""
   },
-  "kaggle_api_key": {
-    "type": "string", 
-    "description": "Kaggle API密钥",
-    "hint": "在Kaggle账号设置中创建API Token获取",
-    "obvious_hint": true,
-    "default": ""
-  },
-  "default_notebook": {
+  "kaggle_password": {
+    "description": "Kaggle 密码", 
     "type": "string",
-    "description": "默认Notebook名称",
-    "hint": "当/kaggle run未指定名称时使用此默认notebook",
+    "hint": "用于登录 Kaggle 的密码",
     "default": ""
   },
-  "retention_days": {
+  "auto_stop_minutes": {
+    "description": "自动停止时间（分钟）",
     "type": "int",
-    "description": "会话数据保留天数", 
-    "hint": "自动清理多少天前的会话数据",
-    "default": 7
+    "hint": "任务运行多长时间后自动停止",
+    "default": 30
   },
-  "keywords": {
-    "type": "list",
-    "description": "触发运行的关键词列表",
-    "hint": "当消息包含这些关键词时会触发notebook运行",
-    "default": ["kaggle", "notebook", "运行"]
+  "refresh_keywords": {
+    "description": "刷新时间关键词",
+    "type": "string", 
+    "hint": "群聊中检测到这些关键词时会刷新任务时间（用逗号分隔）",
+    "default": "运行中,训练中,processing,training"
   }
 }
