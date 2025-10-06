@@ -55,6 +55,58 @@ class KaggleRunnerPlugin(Star):
         except Exception as e:
             logger.error(f"保存 notebooks 失败: {e}")
     
+    def _get_browser_driver(self):
+        """获取浏览器驱动，优先使用 Chromium"""
+        try:
+            # 尝试使用 Chromium
+            from selenium.webdriver.chrome.service import Service as ChromeService
+            options = Options()
+            
+            # 设置 Chromium 路径（如果系统中有）
+            chromium_paths = [
+                "/usr/bin/chromium",
+                "/usr/bin/chromium-browser", 
+                "/snap/bin/chromium",
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",  # macOS
+                "C:\\Program Files\\Chromium\\Application\\chromium.exe"  # Windows
+            ]
+            
+            for path in chromium_paths:
+                if os.path.exists(path):
+                    options.binary_location = path
+                    logger.info(f"使用 Chromium: {path}")
+                    break
+            
+            # 如果没有找到 Chromium，回退到 Chrome
+            if not options.binary_location:
+                logger.info("未找到 Chromium，使用 Chrome")
+            
+            profile_dir = os.path.join(os.getcwd(), "kaggle_profile")
+            options.add_argument(f"--user-data-dir={profile_dir}")
+            options.add_argument("--headless")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--window-size=1920,1080")
+            options.add_argument("--disable-extensions")
+            options.add_argument("--disable-images")
+            
+            # 尝试创建驱动
+            try:
+                driver = webdriver.Chrome(options=options)
+                return driver
+            except Exception as e:
+                logger.warning(f"Chrome 驱动失败: {e}，尝试使用系统默认浏览器")
+                
+                # 回退到系统默认浏览器
+                options.binary_location = None
+                driver = webdriver.Chrome(options=options)
+                return driver
+                
+        except Exception as e:
+            logger.error(f"浏览器驱动创建失败: {e}")
+            raise
+    
     async def _auto_stop_monitor(self):
         """自动停止监控任务"""
         while True:
@@ -72,7 +124,14 @@ class KaggleRunnerPlugin(Star):
                         logger.info(f"自动停止用户 {user_id} 的任务（运行超过 {auto_stop_minutes} 分钟）")
                         del self.running_tasks[user_id]
                         del self.task_start_time[user_id]
-                        # 这里可以发送通知消息
+                        # 发送自动停止通知
+                        try:
+                            await self.context.send_message(
+                                f"platform_name:GROUP_MESSAGE:{user_id}",
+                                f"⏰ 任务已自动停止（运行超过 {auto_stop_minutes} 分钟）"
+                            )
+                        except:
+                            pass
                         
             except Exception as e:
                 logger.error(f"自动停止监控错误: {e}")
@@ -195,19 +254,7 @@ class KaggleRunnerPlugin(Star):
                 callback(False, "❌ 请先在 WebUI 中配置 Kaggle 账号和密码")
                 return
             
-            profile_dir = os.path.join(os.getcwd(), "kaggle_profile")
-            
-            options = Options()
-            options.add_argument(f"--user-data-dir={profile_dir}")
-            options.add_argument("--headless")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--window-size=1920,1080")
-            options.add_argument("--disable-extensions")
-            options.add_argument("--disable-images")
-            
-            driver = webdriver.Chrome(options=options)
+            driver = self._get_browser_driver()
             
             try:
                 logger.info(f"开始运行 Kaggle notebook: {notebook_slug}")
