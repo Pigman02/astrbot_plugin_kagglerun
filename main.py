@@ -222,10 +222,10 @@ class KaggleRunnerPlugin(Star):
         
         yield event.plain_result(f"🚀 开始运行 Kaggle notebook: {target_slug}")
         
-        def run_callback(success, message):
+        def run_callback(success, message, detailed_info=""):
             # 在事件循环中发送结果
             asyncio.run_coroutine_threadsafe(
-                self._send_callback_result(event, message, user_id), 
+                self._send_callback_result(event, success, message, detailed_info, user_id), 
                 asyncio.get_event_loop()
             )
         
@@ -251,7 +251,7 @@ class KaggleRunnerPlugin(Star):
             password = self.config.get("kaggle_password", "")
             
             if not email or not password:
-                callback(False, "❌ 请先在 WebUI 中配置 Kaggle 账号和密码")
+                callback(False, "启动失败", "❌ 请先在 WebUI 中配置 Kaggle 账号和密码")
                 return
             
             driver = self._get_browser_driver()
@@ -287,6 +287,11 @@ class KaggleRunnerPlugin(Star):
                 driver.get(notebook_url)
                 time_module.sleep(10)
                 
+                # 检查页面是否加载成功
+                if "404" in driver.title or "Not Found" in driver.title:
+                    callback(False, "启动失败", f"❌ Notebook 未找到: {notebook_slug}")
+                    return
+                
                 # 尝试找到并点击运行按钮
                 run_selectors = [
                     "//button[contains(., 'Run')]",
@@ -312,32 +317,54 @@ class KaggleRunnerPlugin(Star):
                     logger.info("点击运行按钮成功")
                     time_module.sleep(5)
                     
-                    callback(True, f"✅ Kaggle notebook '{notebook_slug}' 已开始运行！")
+                    # 检查是否成功启动
+                    success_indicators = [
+                        "//*[contains(text(), 'Session') and contains(text(), 'started')]",
+                        "//*[contains(text(), '会话') and contains(text(), '开始')]",
+                        "//*[contains(text(), 'Running')]",
+                        "//*[contains(text(), '运行中')]"
+                    ]
+                    
+                    session_started = False
+                    for indicator in success_indicators:
+                        try:
+                            if driver.find_elements(By.XPATH, indicator):
+                                session_started = True
+                                break
+                        except:
+                            continue
+                    
+                    if session_started:
+                        callback(True, "启动成功", f"✅ Kaggle notebook '{notebook_slug}' 已成功启动运行！")
+                    else:
+                        callback(True, "启动中", f"🟡 Kaggle notebook '{notebook_slug}' 已提交运行，请检查控制台确认状态")
                 else:
-                    callback(False, f"❌ 未找到运行按钮，请检查 notebook 链接")
+                    callback(False, "启动失败", f"❌ 未找到运行按钮，请检查 notebook 链接: {notebook_slug}")
                 
             except Exception as e:
                 logger.error(f"Kaggle 运行错误: {e}")
-                callback(False, f"❌ 运行失败: {str(e)}")
+                callback(False, "启动失败", f"❌ 运行失败: {str(e)}")
                 
             finally:
                 driver.quit()
                 
         except Exception as e:
             logger.error(f"浏览器启动错误: {e}")
-            callback(False, f"❌ 浏览器启动失败: {str(e)}")
+            callback(False, "启动失败", f"❌ 浏览器启动失败: {str(e)}")
     
-    async def _send_callback_result(self, event: AstrMessageEvent, message: str, user_id: str):
+    async def _send_callback_result(self, event: AstrMessageEvent, success: bool, status: str, message: str, user_id: str):
         """发送回调结果"""
         if user_id in self.running_tasks:
-            del self.running_tasks[user_id]
-        if user_id in self.task_start_time:
-            del self.task_start_time[user_id]
+            if not success:
+                # 如果启动失败，清除任务状态
+                del self.running_tasks[user_id]
+                if user_id in self.task_start_time:
+                    del self.task_start_time[user_id]
         
         # 使用主动消息发送结果
         await self.context.send_message(
             event.unified_msg_origin,
-            message
+            f"{status}\n{message}"
         )
     
     @filter.command("kaggle stop")
@@ -390,13 +417,6 @@ class KaggleRunnerPlugin(Star):
             for keyword in keyword_list:
                 if keyword and keyword in message_text:
                     self._refresh_task_time(user_id)
-                    
-                    # 发送刷新通知（可选）
-                    auto_stop_minutes = self.config.get("auto_stop_minutes", 30)
-                    # await self.context.send_message(
-                    #     event.unified_msg_origin,
-                    #     f"⏰ 检测到关键词 '{keyword}'，任务时间已刷新，剩余 {auto_stop_minutes} 分钟"
-                    # )
                     break
     
     async def terminate(self):
