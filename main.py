@@ -2,7 +2,6 @@ import os
 import json
 import asyncio
 import platform
-import logging
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,76 +17,7 @@ from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.firefox import GeckoDriverManager
-from webdriver_manager.core.os_manager import ChromeType
 import time
-
-class FirefoxDriverManager:
-    def __init__(self, headless=True):
-        self.headless = headless
-        self.profile_dir = "./firefox_profile"
-        
-    def setup_driver(self):
-        """设置 Firefox 驱动 - 自动处理架构"""
-        options = self._setup_options()
-        
-        try:
-            # 方法1: 使用 webdriver-manager 自动下载正确架构的驱动
-            return self._setup_with_webdriver_manager(options)
-        except Exception as e:
-            logger.error(f"自动下载失败: {e}")
-            raise
-
-    def _setup_options(self):
-        """设置 Firefox 选项"""
-        options = Options()
-        
-        if self.headless:
-            options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--width=1920")
-        options.add_argument("--height=1080")
-        options.add_argument("--disable-gpu")
-        
-        # 设置用户代理，避免被检测为自动化
-        options.set_preference("dom.webdriver.enabled", False)
-        options.set_preference("useAutomationExtension", False)
-        options.set_preference("general.useragent.override", 
-                             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        
-        return options
-
-    def _setup_with_webdriver_manager(self, options):
-        """使用 webdriver-manager 自动处理架构"""
-        try:
-            # 让 webdriver-manager 自动检测架构并下载合适的驱动
-            driver_path = GeckoDriverManager().install()
-            logger.info(f"✅ 驱动下载路径: {driver_path}")
-            
-            service = Service(driver_path)
-            driver = webdriver.Firefox(service=service, options=options)
-            
-            self._log_system_info(driver)
-            return driver
-            
-        except Exception as e:
-            logger.error(f"webdriver-manager 下载失败: {e}")
-            raise
-
-    def _log_system_info(self, driver):
-        """记录系统和驱动信息"""
-        system_info = {
-            "system": platform.system(),
-            "architecture": platform.machine(),
-            "platform": platform.platform(),
-            "processor": platform.processor()
-        }
-        logger.info(f"🖥️ 系统信息: {system_info}")
-        
-        # 获取驱动能力信息
-        caps = driver.capabilities
-        logger.info(f"🚀 浏览器信息: {caps.get('browserName')} {caps.get('browserVersion')}")
-        logger.info(f"🔧 驱动信息: {caps}")
 
 class KaggleAutomation:
     """Kaggle 自动化操作类"""
@@ -99,16 +29,63 @@ class KaggleAutomation:
         self.profile_dir = os.path.join(os.getcwd(), "kaggle_profile_firefox")
         self.is_running = False
         self.last_activity_time = None
-        self.driver_manager = FirefoxDriverManager(headless=True)
         
     def setup_driver(self):
-        """设置 Firefox 浏览器驱动"""
+        """设置 Firefox 浏览器驱动 - 简化版本"""
+        options = Options()
+        
+        # 创建或使用现有的 Firefox 配置文件
+        if not os.path.exists(self.profile_dir):
+            os.makedirs(self.profile_dir)
+        
+        # 设置 Firefox 选项
+        options.add_argument("--headless")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--width=1920")
+        options.add_argument("--height=1080")
+        options.profile = self.profile_dir
+        
         try:
-            self.driver = self.driver_manager.setup_driver()
+            # 方法1: 先尝试系统驱动
+            self.driver = webdriver.Firefox(options=options)
+            logger.info("✅ 使用系统 Firefox 驱动成功")
             return self.driver
         except Exception as e:
-            logger.error(f"初始化浏览器驱动失败: {e}")
-            raise
+            logger.warning(f"系统驱动失败: {e}")
+            
+            # 方法2: 根据架构下载正确的驱动
+            return self.download_correct_driver(options)
+
+    def download_correct_driver(self, options):
+        """下载正确架构的驱动"""
+        # 检测架构
+        machine = platform.machine().lower()
+        logger.info(f"检测到系统架构: {machine}")
+        
+        # 架构映射
+        arch_map = {
+            'aarch64': '0.34.0',  # ARM64
+            'arm64': '0.34.0',    # ARM64
+            'x86_64': '0.34.0',   # x64
+            'amd64': '0.34.0',    # x64
+            'i386': '0.34.0',     # x86
+            'i686': '0.34.0'      # x86
+        }
+        
+        # 选择版本
+        version = arch_map.get(machine, '0.34.0')
+        logger.info(f"选择驱动版本: {version}")
+        
+        try:
+            # 下载指定版本的驱动
+            service = Service(GeckoDriverManager(version=version).install())
+            self.driver = webdriver.Firefox(service=service, options=options)
+            logger.info("✅ 下载驱动成功")
+            return self.driver
+        except Exception as e:
+            logger.error(f"下载驱动失败: {e}")
+            raise Exception(f"无法初始化浏览器驱动: {e}")
     
     def ensure_initialized(self):
         """确保驱动已初始化"""
