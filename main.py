@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import platform
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,29 +31,61 @@ class KaggleAutomation:
         self.last_activity_time = None
         
     def setup_driver(self):
-        """设置 Firefox 浏览器驱动"""
+        """设置 Firefox 浏览器驱动 - 简化版本"""
         options = Options()
         
         # 创建或使用现有的 Firefox 配置文件
         if not os.path.exists(self.profile_dir):
             os.makedirs(self.profile_dir)
         
-        # 设置 Firefox 选项 - 全部使用无头模式
+        # 设置 Firefox 选项
         options.add_argument("--headless")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--width=1920")
         options.add_argument("--height=1080")
-        
-        # 设置配置文件
         options.profile = self.profile_dir
         
-        # 使用 webdriver-manager 自动管理驱动
-        service = Service(GeckoDriverManager().install())
+        try:
+            # 方法1: 先尝试系统驱动
+            self.driver = webdriver.Firefox(options=options)
+            logger.info("✅ 使用系统 Firefox 驱动成功")
+            return self.driver
+        except Exception as e:
+            logger.warning(f"系统驱动失败: {e}")
+            
+            # 方法2: 根据架构下载正确的驱动
+            return self.download_correct_driver(options)
+
+    def download_correct_driver(self, options):
+        """下载正确架构的驱动"""
+        # 检测架构
+        machine = platform.machine().lower()
+        logger.info(f"检测到系统架构: {machine}")
         
-        # 初始化 Firefox 驱动
-        self.driver = webdriver.Firefox(service=service, options=options)
-        return self.driver
+        # 架构映射
+        arch_map = {
+            'aarch64': '0.34.0',  # ARM64
+            'arm64': '0.34.0',    # ARM64
+            'x86_64': '0.34.0',   # x64
+            'amd64': '0.34.0',    # x64
+            'i386': '0.34.0',     # x86
+            'i686': '0.34.0'      # x86
+        }
+        
+        # 选择版本
+        version = arch_map.get(machine, '0.34.0')
+        logger.info(f"选择驱动版本: {version}")
+        
+        try:
+            # 下载指定版本的驱动
+            service = Service(GeckoDriverManager(version=version).install())
+            self.driver = webdriver.Firefox(service=service, options=options)
+            logger.info("✅ 下载驱动成功")
+            return self.driver
+        except Exception as e:
+            logger.error(f"下载驱动失败: {e}")
+            raise Exception(f"无法初始化浏览器驱动: {e}")
     
     def ensure_initialized(self):
         """确保驱动已初始化"""
