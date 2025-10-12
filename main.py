@@ -12,8 +12,10 @@ from astrbot.api import logger
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.firefox import GeckoDriverManager
 import time
 
 class KaggleAutomation:
@@ -29,9 +31,6 @@ class KaggleAutomation:
         
     def setup_driver(self):
         """设置 Firefox 浏览器驱动"""
-        if self.driver:
-            return self.driver
-            
         options = Options()
         
         # 创建或使用现有的 Firefox 配置文件
@@ -48,8 +47,11 @@ class KaggleAutomation:
         # 设置配置文件
         options.profile = self.profile_dir
         
+        # 使用 webdriver-manager 自动管理驱动
+        service = Service(GeckoDriverManager().install())
+        
         # 初始化 Firefox 驱动
-        self.driver = webdriver.Firefox(options=options)
+        self.driver = webdriver.Firefox(service=service, options=options)
         return self.driver
     
     def ensure_initialized(self):
@@ -57,8 +59,122 @@ class KaggleAutomation:
         if not self.driver:
             self.setup_driver()
         return True
-    
-    # ... 其他方法保持不变 (login, check_login_status, run_notebook, stop_session等)
+
+    def login(self):
+        """登录 Kaggle"""
+        try:
+            self.driver.get("https://www.kaggle.com/account/login")
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.NAME, "email"))
+            )
+            
+            email_input = self.driver.find_element(By.NAME, "email")
+            password_input = self.driver.find_element(By.NAME, "password")
+            
+            email_input.send_keys(self.email)
+            password_input.send_keys(self.password)
+            
+            login_button = self.driver.find_element(By.XPATH, "//button[@type='submit']")
+            login_button.click()
+            
+            # 等待登录完成
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "user-avatar"))
+            )
+            return True
+        except Exception as e:
+            logger.error(f"登录失败: {e}")
+            return False
+
+    def check_login_status(self):
+        """检查登录状态"""
+        try:
+            self.driver.get("https://www.kaggle.com/")
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            
+            # 检查是否有用户头像元素
+            user_avatars = self.driver.find_elements(By.CLASS_NAME, "user-avatar")
+            return len(user_avatars) > 0
+        except Exception as e:
+            logger.error(f"检查登录状态失败: {e}")
+            return False
+
+    def run_notebook(self, notebook_path: str) -> bool:
+        """运行指定的 notebook"""
+        try:
+            # 确保已登录
+            if not self.check_login_status():
+                if not self.login():
+                    return False
+            
+            # 访问 notebook
+            notebook_url = f"https://www.kaggle.com/code/{notebook_path}"
+            self.driver.get(notebook_url)
+            
+            # 等待页面加载
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.TAG_NAME, "main"))
+            )
+            
+            # 查找并点击运行按钮
+            run_buttons = self.driver.find_elements(By.XPATH, "//button[contains(text(), 'Run')]")
+            for button in run_buttons:
+                if button.is_displayed() and button.is_enabled():
+                    button.click()
+                    break
+            
+            # 等待运行开始
+            time.sleep(5)
+            
+            # 检查运行状态
+            self.is_running = True
+            self.last_activity_time = datetime.now()
+            return True
+            
+        except Exception as e:
+            logger.error(f"运行 notebook 失败: {e}")
+            self.is_running = False
+            return False
+
+    def stop_session(self) -> bool:
+        """停止当前会话"""
+        try:
+            if self.driver:
+                # 尝试找到停止按钮
+                stop_buttons = self.driver.find_elements(By.XPATH, "//button[contains(text(), 'Stop')]")
+                for button in stop_buttons:
+                    if button.is_displayed() and button.is_enabled():
+                        button.click()
+                        break
+                
+                self.is_running = False
+                return True
+        except Exception as e:
+            logger.error(f"停止会话失败: {e}")
+        
+        self.is_running = False
+        return False
+
+    def should_auto_stop(self, timeout_minutes: int) -> bool:
+        """检查是否应该自动停止"""
+        if not self.last_activity_time or not self.is_running:
+            return False
+        
+        elapsed = datetime.now() - self.last_activity_time
+        return elapsed.total_seconds() >= timeout_minutes * 60
+
+    def update_activity_time(self):
+        """更新活动时间"""
+        self.last_activity_time = datetime.now()
+
+    def close(self):
+        """关闭浏览器"""
+        if self.driver:
+            self.driver.quit()
+            self.driver = None
+            self.is_running = False
 
 @register("kaggle_auto", "AstrBot", "Kaggle Notebook 自动化插件", "1.0.0")
 class KaggleAutoStar(Star):
