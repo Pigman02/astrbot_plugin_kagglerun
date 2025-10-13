@@ -96,7 +96,7 @@ class KaggleAutomation:
     def login(self):
         """登录 Kaggle"""
         try:
-            self.driver.get("https://www.kaggle.com/account/login")
+            self.driver.get("https://www.kaggle.com/account/login?phase=emailSignIn")
             WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.NAME, "email"))
             )
