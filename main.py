@@ -31,62 +31,80 @@ class KaggleAutomation:
         self.last_activity_time = None
         
     def setup_driver(self):
-        """设置 Firefox 浏览器驱动 - 简化版本"""
+        """设置 Firefox 浏览器驱动 - 优化下载版本"""
         options = Options()
         
         # 创建或使用现有的 Firefox 配置文件
         if not os.path.exists(self.profile_dir):
             os.makedirs(self.profile_dir)
         
-        # 设置 Firefox 选项
-        options.add_argument("--headless")
+        # 设置 Firefox 选项 - 保持你原有的选项
+        # options.add_argument("--headless")  # 保持你原来的注释状态
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--width=1920")
-        options.add_argument("--height=1080")
+        options.add_argument("--window-size=1920,1080")
         options.profile = self.profile_dir
         
         try:
-            # 方法1: 先尝试系统驱动
+            # 方法1: 先尝试系统驱动（如果已安装）
             self.driver = webdriver.Firefox(options=options)
             logger.info("✅ 使用系统 Firefox 驱动成功")
             return self.driver
         except Exception as e:
             logger.warning(f"系统驱动失败: {e}")
             
-            # 方法2: 根据架构下载正确的驱动
-            return self.download_correct_driver(options)
+            # 方法2: 使用 WebDriver Manager 自动下载和管理驱动
+            return self.download_with_webdriver_manager(options)
 
-    def download_correct_driver(self, options):
-        """下载正确架构的驱动"""
-        # 检测架构
-        machine = platform.machine().lower()
-        logger.info(f"检测到系统架构: {machine}")
-        
-        # 架构映射
-        arch_map = {
-            'aarch64': '0.34.0',  # ARM64
-            'arm64': '0.34.0',    # ARM64
-            'x86_64': '0.34.0',   # x64
-            'amd64': '0.34.0',    # x64
-            'i386': '0.34.0',     # x86
-            'i686': '0.34.0'      # x86
-        }
-        
-        # 选择版本
-        version = arch_map.get(machine, '0.34.0')
-        logger.info(f"选择驱动版本: {version}")
-        
+    def download_with_webdriver_manager(self, options):
+        """使用 WebDriver Manager 下载和管理驱动"""
         try:
-            # 下载指定版本的驱动
-            service = Service(GeckoDriverManager(version=version).install())
+            logger.info("🔄 开始使用 WebDriver Manager 下载 Firefox 驱动...")
+            
+            # 使用 WebDriver Manager 自动下载合适的驱动版本
+            driver_path = GeckoDriverManager().install()
+            logger.info(f"✅ 驱动下载完成，路径: {driver_path}")
+            
+            # 创建服务
+            service = Service(driver_path)
+            
+            # 初始化驱动
             self.driver = webdriver.Firefox(service=service, options=options)
-            logger.info("✅ 下载驱动成功")
+            logger.info("✅ WebDriver Manager 驱动初始化成功")
             return self.driver
+            
         except Exception as e:
-            logger.error(f"下载驱动失败: {e}")
+            logger.error(f"❌ WebDriver Manager 下载失败: {e}")
+            
+            # 方法3: 尝试使用最新稳定版本
+            return self.download_fallback(options)
+
+    def download_fallback(self, options):
+        """备用下载方案"""
+        try:
+            logger.info("🔄 尝试备用下载方案...")
+            
+            # 尝试几个已知的稳定版本
+            stable_versions = ['0.34.0', '0.33.0', '0.32.2']
+            
+            for version in stable_versions:
+                try:
+                    logger.info(f"🔄 尝试版本: {version}")
+                    service = Service(GeckoDriverManager(version=version).install())
+                    self.driver = webdriver.Firefox(service=service, options=options)
+                    logger.info(f"✅ 备用方案成功，版本: {version}")
+                    return self.driver
+                except Exception as version_error:
+                    logger.warning(f"版本 {version} 失败: {version_error}")
+                    continue
+            
+            # 所有版本都失败，抛出异常
+            raise Exception("所有驱动下载方案均失败")
+            
+        except Exception as e:
+            logger.error(f"❌ 备用下载方案失败: {e}")
             raise Exception(f"无法初始化浏览器驱动: {e}")
-    
+
     def ensure_initialized(self):
         """确保驱动已初始化"""
         if not self.driver:
@@ -94,74 +112,93 @@ class KaggleAutomation:
         return True
 
     def login(self):
-        """登录 Kaggle"""
+        """登录 Kaggle - 保持你原有的逻辑"""
         try:
+            # 保持你原有的登录网址
             self.driver.get("https://www.kaggle.com/account/login?phase=emailSignIn")
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.NAME, "email"))
-            )
+            time.sleep(5)
             
-            email_input = self.driver.find_element(By.NAME, "email")
-            password_input = self.driver.find_element(By.NAME, "password")
+            current_url = self.driver.current_url
+            print(f"📍 当前页面: {current_url}")
             
-            email_input.send_keys(self.email)
-            password_input.send_keys(self.password)
-            
-            login_button = self.driver.find_element(By.XPATH, "//button[@type='submit']")
-            login_button.click()
-            
-            # 等待登录完成
-            WebDriverWait(self.driver, 15).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "user-avatar"))
-            )
-            return True
+            if "login" in current_url:
+                if not self.email or not self.password:
+                    print("❌ 需要登录但未提供账号密码")
+                    return False
+                
+                # 需要登录 - 保持你原有的登录逻辑
+                print("🔐 执行自动登录...")
+                email_input = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.NAME, "email"))
+                )
+                email_input.send_keys(self.email)
+                
+                password_input = self.driver.find_element(By.NAME, "password")
+                password_input.send_keys(self.password)
+                
+                login_button = self.driver.find_element(By.XPATH, "//button[@type='submit']")
+                login_button.click()
+                
+                # 等待跳转 - 保持你原有的逻辑
+                WebDriverWait(self.driver, 15).until(
+                    lambda d: "login" not in d.current_url
+                )
+                print("✅ 自动登录成功！")
+                return True
+            else:
+                print("✅ 已登录状态")
+                return True
+                
         except Exception as e:
             logger.error(f"登录失败: {e}")
             return False
 
     def check_login_status(self):
-        """检查登录状态"""
-        try:
-            self.driver.get("https://www.kaggle.com/")
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-            
-            # 检查是否有用户头像元素
-            user_avatars = self.driver.find_elements(By.CLASS_NAME, "user-avatar")
-            return len(user_avatars) > 0
-        except Exception as e:
-            logger.error(f"检查登录状态失败: {e}")
+        """检查登录状态 - 修改为访问登录页面"""
+        print("🔍 检测登录状态...")
+        self.driver.get("https://www.kaggle.com/account/login?phase=emailSignIn")
+        time.sleep(5)
+        
+        current_url = self.driver.current_url
+        print(f"📍 当前页面: {current_url}")
+        
+        if "login" in current_url:
+            print("❌ 未登录状态")
             return False
+        else:
+            print("✅ 已登录状态")
+            return True
 
     def run_notebook(self, notebook_path: str) -> bool:
-        """运行指定的 notebook"""
+        """运行指定的 notebook - 保持你原有的逻辑"""
         try:
             # 确保已登录
             if not self.check_login_status():
                 if not self.login():
                     return False
             
-            # 访问 notebook
-            notebook_url = f"https://www.kaggle.com/code/{notebook_path}"
+            # 运行 notebook - 保持你原有的网址格式
+            notebook_url = f"https://www.kaggle.com/code/{notebook_path}/edit/run/265492693"
+            print(f"📓 访问 notebook: {notebook_url}")
+            
             self.driver.get(notebook_url)
+            time.sleep(10)
             
-            # 等待页面加载
-            WebDriverWait(self.driver, 15).until(
-                EC.presence_of_element_located((By.TAG_NAME, "main"))
+            # 保存版本 - 保持你原有的按钮逻辑
+            print("💾 保存版本...")
+            save_version_btn = WebDriverWait(self.driver, 15).until(
+                EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()='Save Version']]"))
             )
-            
-            # 查找并点击运行按钮
-            run_buttons = self.driver.find_elements(By.XPATH, "//button[contains(text(), 'Run')]")
-            for button in run_buttons:
-                if button.is_displayed() and button.is_enabled():
-                    button.click()
-                    break
-            
-            # 等待运行开始
+            save_version_btn.click()
             time.sleep(5)
             
-            # 检查运行状态
+            save_btn = WebDriverWait(self.driver, 15).until(
+                EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()='Save']]"))
+            )
+            save_btn.click()
+            time.sleep(5)
+            
+            print("🎉 无头模式自动化完成！")
             self.is_running = True
             self.last_activity_time = datetime.now()
             return True
@@ -172,23 +209,141 @@ class KaggleAutomation:
             return False
 
     def stop_session(self) -> bool:
-        """停止当前会话"""
+        """停止当前会话 - 修改为先查找Running状态，再查找旁边的more_horiz按钮"""
         try:
-            if self.driver:
-                # 尝试找到停止按钮
-                stop_buttons = self.driver.find_elements(By.XPATH, "//button[contains(text(), 'Stop')]")
-                for button in stop_buttons:
-                    if button.is_displayed() and button.is_enabled():
-                        button.click()
-                        break
-                
-                self.is_running = False
-                return True
+            # 访问 Kaggle 首页
+            print("🌐 访问 Kaggle 首页...")
+            self.driver.get("https://www.kaggle.com")
+            time.sleep(5)
+            
+            if "login" in self.driver.current_url:
+                print("❌ 未登录状态")
+                return False
+            
+            print("✅ 已登录状态")
+            
+            # 第一步：点击 View Active Events (P标签) - 完全保持你原有的选择器
+            print("1. 点击 'View Active Events'...")
+            first_button_selectors = [
+                "//p[contains(@class, 'sc-gGKoUb') and contains(text(), 'View Active Events')]",
+                "//p[contains(text(), 'View Active Events')]",
+                "//*[contains(@class, 'sc-gGKoUb') and contains(text(), 'View Active Events')]"
+            ]
+            
+            first_button = None
+            for selector in first_button_selectors:
+                try:
+                    first_button = WebDriverWait(self.driver, 10).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    print(f"✅ 找到第一个按钮: {selector}")
+                    break
+                except:
+                    continue
+            
+            if not first_button:
+                print("❌ 未找到第一个按钮")
+                return False
+            
+            self.driver.execute_script("arguments[0].click();", first_button)
+            print("✅ 点击第一个按钮成功")
+            time.sleep(3)
+            
+            # 第二步：先查找Running状态，然后查找旁边的more_horiz按钮
+            print("2. 查找Running状态并点击旁边的'more_horiz'按钮...")
+            
+            # 方法1: 先查找Running状态，然后找同一行中的more_horiz按钮
+            try:
+                # 查找包含"Running"文本的元素
+                running_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Running')]")
+                if running_elements:
+                    print("✅ 找到Running状态")
+                    # 找到Running元素所在的容器，然后在其中查找more_horiz按钮
+                    running_container = running_elements[0].find_element(By.XPATH, "./ancestor::div[contains(@class, 'sc-dcMTLQ') or contains(@class, 'session-item')][1]")
+                    more_horiz_buttons = running_container.find_elements(By.XPATH, ".//button[contains(text(), 'more_horiz')]")
+                    
+                    if more_horiz_buttons:
+                        second_button = more_horiz_buttons[0]
+                        print("✅ 通过Running状态找到more_horiz按钮")
+                        self.driver.execute_script("arguments[0].click();", second_button)
+                        print("✅ 点击第二个按钮成功")
+                        time.sleep(3)
+                    else:
+                        # 如果方法1失败，使用原有的选择器
+                        print("⚠️ 通过Running状态未找到按钮，使用原有选择器")
+                        if not self.click_more_horiz_original():
+                            return False
+                else:
+                    print("❌ 未找到Running状态")
+                    return False
+                    
+            except Exception as e:
+                print(f"⚠️ 通过Running状态查找失败: {e}，使用原有选择器")
+                if not self.click_more_horiz_original():
+                    return False
+            
+            # 第三步：点击 Stop Session (P标签) - 完全保持你原有的选择器
+            print("3. 点击 'Stop Session'...")
+            third_button_selectors = [
+                "//p[contains(@class, 'sc-hwddKA') and contains(text(), 'Stop Session')]",
+                "//p[contains(text(), 'Stop Session')]",
+                "//*[contains(@class, 'sc-hwddKA') and contains(text(), 'Stop Session')]"
+            ]
+            
+            third_button = None
+            for selector in third_button_selectors:
+                try:
+                    third_button = WebDriverWait(self.driver, 10).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    print(f"✅ 找到第三个按钮: {selector}")
+                    break
+                except:
+                    continue
+            
+            if not third_button:
+                print("❌ 未找到第三个按钮")
+                return False
+            
+            self.driver.execute_script("arguments[0].click();", third_button)
+            print("✅ 点击第三个按钮成功")
+            print("🎉 所有操作完成！Session 已停止")
+            self.is_running = False
+            return True
+            
         except Exception as e:
-            logger.error(f"停止会话失败: {e}")
+            print(f"❌ 操作失败: {e}")
+            self.is_running = False
+            return False
+
+    def click_more_horiz_original(self):
+        """使用原有的more_horiz按钮选择器"""
+        second_button_selectors = [
+            "//button[contains(@class, 'sc-dcMTLQ') and contains(@class, 'ga-DKQj') and contains(text(), 'more_horiz')]",
+            "//button[@aria-label='More options for stable-diffusion-webui-bot']",
+            "//button[@title='More options for stable-diffusion-webui-bot']",
+            "//button[contains(@class, 'sc-dcMTLQ') and contains(text(), 'more_horiz')]"
+        ]
         
-        self.is_running = False
-        return False
+        second_button = None
+        for selector in second_button_selectors:
+            try:
+                second_button = WebDriverWait(self.driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, selector))
+                )
+                print(f"✅ 找到第二个按钮: {selector}")
+                break
+            except:
+                continue
+        
+        if not second_button:
+            print("❌ 未找到第二个按钮")
+            return False
+        
+        self.driver.execute_script("arguments[0].click();", second_button)
+        print("✅ 点击第二个按钮成功")
+        time.sleep(3)
+        return True
 
     def should_auto_stop(self, timeout_minutes: int) -> bool:
         """检查是否应该自动停止"""
