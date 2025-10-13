@@ -85,7 +85,7 @@ class KaggleAutomation:
             logger.info("🔄 尝试备用下载方案...")
             
             # 尝试几个已知的稳定版本
-            stable_versions = ['0.34.0', '0.33.0', '0.32.2']
+            stable_versions = ['v0.34.0', 'v0.33.0', 'v0.32.2']
             
             for version in stable_versions:
                 try:
