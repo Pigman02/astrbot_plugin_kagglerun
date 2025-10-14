@@ -31,14 +31,14 @@ class KaggleAutomation:
         self.last_activity_time = None
         
     def setup_driver(self):
-        """设置 Firefox 浏览器驱动 - 优化下载版本"""
+        """设置 Firefox 浏览器驱动"""
         options = Options()
         
         # 创建或使用现有的 Firefox 配置文件
         if not os.path.exists(self.profile_dir):
             os.makedirs(self.profile_dir)
         
-        # 设置 Firefox 选项 - 保持你原有的选项
+        # 设置 Firefox 选项
         # options.add_argument("--headless")  # 保持你原来的注释状态
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -61,7 +61,7 @@ class KaggleAutomation:
         try:
             logger.info("🔄 开始使用 WebDriver Manager 下载 Firefox 驱动...")
             
-            # 使用 WebDriver Manager 自动下载合适的驱动版本
+            # 不指定版本，让 WebDriver Manager 自动选择
             driver_path = GeckoDriverManager().install()
             logger.info(f"✅ 驱动下载完成，路径: {driver_path}")
             
@@ -75,35 +75,7 @@ class KaggleAutomation:
             
         except Exception as e:
             logger.error(f"❌ WebDriver Manager 下载失败: {e}")
-            
-            # 方法3: 尝试使用最新稳定版本
-            return self.download_fallback(options)
-
-    def download_fallback(self, options):
-        """备用下载方案"""
-        try:
-            logger.info("🔄 尝试备用下载方案...")
-            
-            # 尝试几个已知的稳定版本
-            stable_versions = ['v0.34.0', 'v0.33.0', 'v0.32.2']
-            
-            for version in stable_versions:
-                try:
-                    logger.info(f"🔄 尝试版本: {version}")
-                    service = Service(GeckoDriverManager(version=version).install())
-                    self.driver = webdriver.Firefox(service=service, options=options)
-                    logger.info(f"✅ 备用方案成功，版本: {version}")
-                    return self.driver
-                except Exception as version_error:
-                    logger.warning(f"版本 {version} 失败: {version_error}")
-                    continue
-            
-            # 所有版本都失败，抛出异常
-            raise Exception("所有驱动下载方案均失败")
-            
-        except Exception as e:
-            logger.error(f"❌ 备用下载方案失败: {e}")
-            raise Exception(f"无法初始化浏览器驱动: {e}")
+            raise
 
     def ensure_initialized(self):
         """确保驱动已初始化"""
