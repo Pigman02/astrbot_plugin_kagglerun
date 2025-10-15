@@ -2,6 +2,9 @@ import os
 import json
 import asyncio
 import platform
+import requests
+import tarfile
+import zipfile
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,19 +19,33 @@ from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.firefox import GeckoDriverManager
 import time
 
 class KaggleAutomation:
     """Kaggle 自动化操作类"""
     
-    def __init__(self, email=None, password=None):
+    def __init__(self, email=None, password=None, plugin_data_dir=None):
         self.email = email
         self.password = password
         self.driver = None
-        self.profile_dir = os.path.join(os.getcwd(), "kaggle_profile_firefox")
+        
+        # 使用插件数据目录
+        if plugin_data_dir:
+            self.base_dir = Path(plugin_data_dir)
+        else:
+            # 默认路径：从插件目录出发的相对路径
+            # 假设插件在 data/plugins/astrbot_plugin_kagglerun
+            # 数据目录在 data/plugin_data/astrbot_plugin_kagglerun
+            current_file = Path(__file__).parent  # 插件代码所在目录
+            self.base_dir = current_file.parent.parent / "plugin_data" / "astrbot_plugin_kagglerun"
+        
+        self.profile_dir = self.base_dir / "kaggle_profile_firefox"
         self.is_running = False
         self.last_activity_time = None
+        
+        # 确保目录存在
+        os.makedirs(self.base_dir, exist_ok=True)
+        logger.info(f"📁 Kaggle自动化数据目录: {self.base_dir}")
         
     def setup_driver(self):
         """设置 Firefox 浏览器驱动"""
@@ -36,45 +53,136 @@ class KaggleAutomation:
         
         # 创建或使用现有的 Firefox 配置文件
         if not os.path.exists(self.profile_dir):
-            os.makedirs(self.profile_dir)
+            os.makedirs(self.profile_dir, exist_ok=True)
         
         # 设置 Firefox 选项
-        # options.add_argument("--headless")  # 保持你原来的注释状态
+        options.add_argument("--headless")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1920,1080")
-        options.profile = self.profile_dir
+        options.profile = str(self.profile_dir)
         
         try:
-            # 方法1: 先尝试系统驱动（如果已安装）
+            # 方法1: 先尝试系统驱动
             self.driver = webdriver.Firefox(options=options)
             logger.info("✅ 使用系统 Firefox 驱动成功")
             return self.driver
         except Exception as e:
             logger.warning(f"系统驱动失败: {e}")
             
-            # 方法2: 使用 WebDriver Manager 自动下载和管理驱动
-            return self.download_with_webdriver_manager(options)
+            # 方法2: 直接从 GitHub Release 下载
+            return self.download_direct_from_release(options)
 
-    def download_with_webdriver_manager(self, options):
-        """使用 WebDriver Manager 下载和管理驱动"""
-        try:
-            logger.info("🔄 开始使用 WebDriver Manager 下载 Firefox 驱动...")
-            
-            # 不指定版本，让 WebDriver Manager 自动选择
-            driver_path = GeckoDriverManager().install()
-            logger.info(f"✅ 驱动下载完成，路径: {driver_path}")
-            
-            # 创建服务
-            service = Service(driver_path)
-            
-            # 初始化驱动
+    def download_direct_from_release(self, options):
+        """直接从 GitHub Release 下载，使用固定存储目录"""
+        # 检测系统和架构
+        system = platform.system().lower()
+        arch = platform.machine().lower()
+        
+        logger.info(f"🔍 检测系统: {system}, 架构: {arch}")
+        
+        # 系统映射
+        system_map = {
+            'linux': 'linux',
+            'darwin': 'macos',
+            'windows': 'win',
+        }
+        
+        # 架构映射
+        arch_map = {
+            'aarch64': 'aarch64',
+            'arm64': 'aarch64',
+            'x86_64': '64',
+            'amd64': '64',
+            'i386': '32',
+            'i686': '32',
+        }
+        
+        system_name = system_map.get(system, 'linux')
+        arch_name = arch_map.get(arch, '64')
+        
+        # 构建下载URL和文件名
+        if system_name == 'win':
+            extension = 'zip'
+            filename = f'geckodriver-v0.36.0-win{arch_name}.{extension}'
+        elif system_name == 'macos':
+            extension = 'tar.gz'
+            filename = f'geckodriver-v0.36.0-macos.{extension}'
+        else:
+            if arch_name == 'aarch64':
+                extension = 'tar.gz'
+                filename = f'geckodriver-v0.36.0-linux-{arch_name}.{extension}'
+            else:
+                extension = 'tar.gz'
+                filename = f'geckodriver-v0.36.0-linux{arch_name}.{extension}'
+        
+        download_url = f'https://github.com/mozilla/geckodriver/releases/download/v0.36.0/{filename}'
+        
+        # 固定存储目录
+        storage_dir = self.base_dir / "geckodriver_cache" / "v0.36.0"
+        os.makedirs(storage_dir, exist_ok=True)
+        
+        archive_path = storage_dir / filename
+        driver_path = storage_dir / 'geckodriver'
+        
+        # 如果驱动已存在，直接使用
+        if os.path.exists(driver_path):
+            logger.info(f"✅ 使用缓存驱动: {driver_path}")
+            service = Service(str(driver_path))
             self.driver = webdriver.Firefox(service=service, options=options)
-            logger.info("✅ WebDriver Manager 驱动初始化成功")
+            return self.driver
+        
+        logger.info(f"📥 下载URL: {download_url}")
+        
+        try:
+            # 下载文件
+            logger.info("⬇️ 开始下载驱动...")
+            response = requests.get(download_url, stream=True)
+            response.raise_for_status()
+            
+            with open(archive_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            logger.info(f"✅ 文件下载完成: {archive_path}")
+            
+            # 解压文件
+            logger.info("📦 解压文件...")
+            if extension == 'tar.gz':
+                with tarfile.open(archive_path, 'r:gz') as tar:
+                    tar.extractall(storage_dir)
+            elif extension == 'zip':
+                with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+                    zip_ref.extractall(storage_dir)
+            
+            # 查找 geckodriver 文件
+            for root, dirs, files in os.walk(storage_dir):
+                for file in files:
+                    if 'geckodriver' in file.lower() and not file.startswith('.'):
+                        found_path = os.path.join(root, file)
+                        # 重命名到标准名称
+                        if found_path != str(driver_path):
+                            os.rename(found_path, driver_path)
+                        break
+            
+            # 设置权限
+            os.chmod(driver_path, 0o755)
+            
+            # 删除压缩包
+            os.remove(archive_path)
+            logger.info(f"✅ 驱动准备完成: {driver_path}")
+            
+            # 创建驱动
+            service = Service(str(driver_path))
+            self.driver = webdriver.Firefox(service=service, options=options)
+            logger.info("✅ 驱动初始化成功")
             return self.driver
             
         except Exception as e:
-            logger.error(f"❌ WebDriver Manager 下载失败: {e}")
+            logger.error(f"❌ 直接下载失败: {e}")
+            # 清理失败的文件
+            if os.path.exists(archive_path):
+                os.remove(archive_path)
             raise
 
     def ensure_initialized(self):
@@ -84,7 +192,7 @@ class KaggleAutomation:
         return True
 
     def login(self):
-        """登录 Kaggle - 保持你原有的逻辑"""
+        """登录 Kaggle"""
         try:
             # 保持你原有的登录网址
             self.driver.get("https://www.kaggle.com/account/login?phase=emailSignIn")
@@ -142,7 +250,7 @@ class KaggleAutomation:
             return True
 
     def run_notebook(self, notebook_path: str) -> bool:
-        """运行指定的 notebook - 保持你原有的逻辑"""
+        """运行指定的 notebook"""
         try:
             # 确保已登录
             if not self.check_login_status():
@@ -341,15 +449,20 @@ class KaggleAutoStar(Star):
     def __init__(self, context: Context, config):
         super().__init__(context)
         self.config = config
+        
+        # 设置插件数据目录
+        current_file = Path(__file__).parent  # 插件代码所在目录
+        self.plugin_data_dir = current_file.parent.parent / "plugin_data" / "astrbot_plugin_kagglerun"
+        
         self.notebooks: Dict[str, str] = {}
-        self.plugin_data_dir = Path("data/plugin_data/kaggle_auto")
         self.notebooks_file = self.plugin_data_dir / "kaggle_notebooks.json"
         self.auto_stop_task = None
         
         # 初始化 Kaggle 管理器
         self.kaggle_manager = KaggleAutomation(
             email=self.config.kaggle_email,
-            password=self.config.kaggle_password
+            password=self.config.kaggle_password,
+            plugin_data_dir=self.plugin_data_dir
         )
         
         # 初始化
@@ -382,7 +495,7 @@ class KaggleAutoStar(Star):
     def save_notebooks(self):
         """保存notebook列表"""
         try:
-            self.notebooks_file.parent.mkdir(parents=True, exist_ok=True)
+            self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
             with open(self.notebooks_file, 'w', encoding='utf-8') as f:
                 json.dump(self.notebooks, f, ensure_ascii=False, indent=2)
         except Exception as e:
