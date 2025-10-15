@@ -150,27 +150,32 @@ class KaggleAutomation:
             logger.info("📦 解压文件...")
             if extension == 'tar.gz':
                 with tarfile.open(archive_path, 'r:gz') as tar:
+                    # 直接解压到存储目录
                     tar.extractall(storage_dir)
             elif extension == 'zip':
                 with zipfile.ZipFile(archive_path, 'r') as zip_ref:
                     zip_ref.extractall(storage_dir)
             
-            # 查找 geckodriver 文件
-            for root, dirs, files in os.walk(storage_dir):
-                for file in files:
-                    if 'geckodriver' in file.lower() and not file.startswith('.'):
-                        found_path = os.path.join(root, file)
-                        # 重命名到标准名称
-                        if found_path != str(driver_path):
-                            os.rename(found_path, driver_path)
-                        break
-            
-            # 设置权限
-            os.chmod(driver_path, 0o755)
+            # 设置权限（确保解压出的文件有执行权限）
+            if os.path.exists(driver_path):
+                os.chmod(driver_path, 0o755)
+                logger.info(f"✅ 驱动准备完成: {driver_path}")
+            else:
+                # 如果解压后的文件名不是标准的geckodriver，查找并重命名
+                for root, dirs, files in os.walk(storage_dir):
+                    for file in files:
+                        if 'geckodriver' in file.lower() and not file.startswith('.'):
+                            found_path = os.path.join(root, file)
+                            if found_path != str(driver_path):
+                                os.rename(found_path, driver_path)
+                                os.chmod(driver_path, 0o755)
+                                logger.info(f"✅ 重命名驱动文件: {found_path} -> {driver_path}")
+                            break
             
             # 删除压缩包
-            os.remove(archive_path)
-            logger.info(f"✅ 驱动准备完成: {driver_path}")
+            if os.path.exists(archive_path):
+                os.remove(archive_path)
+                logger.info(f"🗑️ 删除压缩包: {archive_path}")
             
             # 创建驱动
             service = Service(str(driver_path))
