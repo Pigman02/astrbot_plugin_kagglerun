@@ -306,8 +306,9 @@ class KaggleAutomation:
             return False
 
     def stop_session(self) -> bool:
-        """停止当前会话"""
+        """停止当前会话 - 使用精确的按钮操作方式"""
         try:
+            # 访问 Kaggle 首页
             print("🌐 访问 Kaggle 首页...")
             self.driver.get("https://www.kaggle.com")
             time.sleep(5)
@@ -318,6 +319,7 @@ class KaggleAutomation:
             
             print("✅ 已登录状态")
             
+            # 第一步：点击 View Active Events (P标签)
             print("1. 点击 'View Active Events'...")
             first_button_selectors = [
                 "//p[contains(@class, 'sc-gGKoUb') and contains(text(), 'View Active Events')]",
@@ -344,34 +346,35 @@ class KaggleAutomation:
             print("✅ 点击第一个按钮成功")
             time.sleep(3)
             
-            print("2. 查找Running状态并点击旁边的'more_horiz'按钮...")
+            # 第二步：点击 more_horiz 按钮
+            print("2. 点击 'more_horiz' 按钮...")
+            second_button_selectors = [
+                "//button[contains(@class, 'sc-dcMTLQ') and contains(@class, 'ga-DKQj') and contains(text(), 'more_horiz')]",
+                "//button[@aria-label='More options for stable-diffusion-webui-bot']",
+                "//button[@title='More options for stable-diffusion-webui-bot']",
+                "//button[contains(@class, 'sc-dcMTLQ') and contains(text(), 'more_horiz')]"
+            ]
             
-            try:
-                running_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Running')]")
-                if running_elements:
-                    print("✅ 找到Running状态")
-                    running_container = running_elements[0].find_element(By.XPATH, "./ancestor::div[contains(@class, 'sc-dcMTLQ') or contains(@class, 'session-item')][1]")
-                    more_horiz_buttons = running_container.find_elements(By.XPATH, ".//button[contains(text(), 'more_horiz')]")
-                    
-                    if more_horiz_buttons:
-                        second_button = more_horiz_buttons[0]
-                        print("✅ 通过Running状态找到more_horiz按钮")
-                        self.driver.execute_script("arguments[0].click();", second_button)
-                        print("✅ 点击第二个按钮成功")
-                        time.sleep(3)
-                    else:
-                        print("⚠️ 通过Running状态未找到按钮，使用原有选择器")
-                        if not self.click_more_horiz_original():
-                            return False
-                else:
-                    print("❌ 未找到Running状态")
-                    return False
-                    
-            except Exception as e:
-                print(f"⚠️ 通过Running状态查找失败: {e}，使用原有选择器")
-                if not self.click_more_horiz_original():
-                    return False
+            second_button = None
+            for selector in second_button_selectors:
+                try:
+                    second_button = WebDriverWait(self.driver, 10).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    print(f"✅ 找到第二个按钮: {selector}")
+                    break
+                except:
+                    continue
             
+            if not second_button:
+                print("❌ 未找到第二个按钮")
+                return False
+            
+            self.driver.execute_script("arguments[0].click();", second_button)
+            print("✅ 点击第二个按钮成功")
+            time.sleep(3)
+            
+            # 第三步：点击 Stop Session (P标签)
             print("3. 点击 'Stop Session'...")
             third_button_selectors = [
                 "//p[contains(@class, 'sc-hwddKA') and contains(text(), 'Stop Session')]",
@@ -405,35 +408,6 @@ class KaggleAutomation:
             self.is_running = False
             return False
 
-    def click_more_horiz_original(self):
-        """使用原有的more_horiz按钮选择器"""
-        second_button_selectors = [
-            "//button[contains(@class, 'sc-dcMTLQ') and contains(@class, 'ga-DKQj') and contains(text(), 'more_horiz')]",
-            "//button[@aria-label='More options for stable-diffusion-webui-bot']",
-            "//button[@title='More options for stable-diffusion-webui-bot']",
-            "//button[contains(@class, 'sc-dcMTLQ') and contains(text(), 'more_horiz')]"
-        ]
-        
-        second_button = None
-        for selector in second_button_selectors:
-            try:
-                second_button = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.XPATH, selector))
-                )
-                print(f"✅ 找到第二个按钮: {selector}")
-                break
-            except:
-                continue
-        
-        if not second_button:
-            print("❌ 未找到第二个按钮")
-            return False
-        
-        self.driver.execute_script("arguments[0].click();", second_button)
-        print("✅ 点击第二个按钮成功")
-        time.sleep(3)
-        return True
-
     def should_auto_stop(self, timeout_minutes: int) -> bool:
         """检查是否应该自动停止"""
         if not self.last_activity_time or not self.is_running:
@@ -453,7 +427,6 @@ class KaggleAutomation:
             self.driver = None
             self.is_running = False
 
-# 其余的插件类代码保持不变...
 @register("kaggle_auto", "AstrBot", "Kaggle Notebook 自动化插件", "1.0.0")
 class KaggleAutoStar(Star):
     def __init__(self, context: Context, config):
