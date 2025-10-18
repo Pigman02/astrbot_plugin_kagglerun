@@ -46,7 +46,7 @@ class KaggleAutomation:
         logger.info(f"📁 Kaggle自动化数据目录: {self.base_dir}")
         
     def setup_driver(self):
-        """设置 Firefox 浏览器驱动"""
+        """设置 Firefox 浏览器驱动 - 直接使用下载的驱动"""
         options = Options()
         
         # 创建或使用现有的 Firefox 配置文件
@@ -60,16 +60,9 @@ class KaggleAutomation:
         options.add_argument("--window-size=1920,1080")
         options.profile = str(self.profile_dir)
         
-        try:
-            # 方法1: 先尝试系统驱动
-            self.driver = webdriver.Firefox(options=options)
-            logger.info("✅ 使用系统 Firefox 驱动成功")
-            return self.driver
-        except Exception as e:
-            logger.warning(f"系统驱动失败: {e}")
-            
-            # 方法2: 直接从 GitHub Release 下载
-            return self.download_direct_from_release(options)
+        # 直接使用下载的驱动，跳过系统驱动检查
+        logger.info("🚀 直接使用下载的 Firefox 驱动...")
+        return self.download_direct_from_release(options)
 
     def download_direct_from_release(self, options):
         """直接从 GitHub Release 下载，使用固定存储目录"""
