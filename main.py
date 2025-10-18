@@ -34,9 +34,7 @@ class KaggleAutomation:
             self.base_dir = Path(plugin_data_dir)
         else:
             # 默认路径：从插件目录出发的相对路径
-            # 假设插件在 data/plugins/astrbot_plugin_kagglerun
-            # 数据目录在 data/plugin_data/astrbot_plugin_kagglerun
-            current_file = Path(__file__).parent  # 插件代码所在目录
+            current_file = Path(__file__).parent
             self.base_dir = current_file.parent.parent / "plugin_data" / "astrbot_plugin_kagglerun"
         
         self.profile_dir = self.base_dir / "kaggle_profile_firefox"
@@ -148,29 +146,46 @@ class KaggleAutomation:
             
             # 解压文件
             logger.info("📦 解压文件...")
+            extracted_files = []
+            
             if extension == 'tar.gz':
                 with tarfile.open(archive_path, 'r:gz') as tar:
-                    # 直接解压到存储目录
+                    # 获取解压前的文件列表
+                    members = tar.getmembers()
                     tar.extractall(storage_dir)
+                    extracted_files = [member.name for member in members]
             elif extension == 'zip':
                 with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+                    extracted_files = zip_ref.namelist()
                     zip_ref.extractall(storage_dir)
             
-            # 设置权限（确保解压出的文件有执行权限）
-            if os.path.exists(driver_path):
-                os.chmod(driver_path, 0o755)
-                logger.info(f"✅ 驱动准备完成: {driver_path}")
-            else:
-                # 如果解压后的文件名不是标准的geckodriver，查找并重命名
-                for root, dirs, files in os.walk(storage_dir):
-                    for file in files:
-                        if 'geckodriver' in file.lower() and not file.startswith('.'):
-                            found_path = os.path.join(root, file)
-                            if found_path != str(driver_path):
-                                os.rename(found_path, driver_path)
-                                os.chmod(driver_path, 0o755)
-                                logger.info(f"✅ 重命名驱动文件: {found_path} -> {driver_path}")
-                            break
+            logger.info(f"📄 解压出的文件: {extracted_files}")
+            
+            # 查找真正的 geckodriver 可执行文件
+            geckodriver_found = False
+            for root, dirs, files in os.walk(storage_dir):
+                for file in files:
+                    full_path = os.path.join(root, file)
+                    # 检查是否是真正的可执行文件，不是压缩包
+                    if 'geckodriver' in file.lower() and not file.endswith(('.tar.gz', '.zip')):
+                        # 如果是真正的可执行文件，移动到标准位置
+                        if full_path != str(driver_path):
+                            # 如果目标文件已存在，先删除
+                            if os.path.exists(driver_path):
+                                os.remove(driver_path)
+                            os.rename(full_path, driver_path)
+                            logger.info(f"✅ 移动驱动文件: {full_path} -> {driver_path}")
+                        geckodriver_found = True
+                        break
+                if geckodriver_found:
+                    break
+            
+            if not geckodriver_found:
+                raise Exception("未在解压文件中找到 geckodriver 可执行文件")
+            
+            # 设置执行权限
+            os.chmod(driver_path, 0o755)
+            logger.info(f"✅ 驱动准备完成: {driver_path}")
             
             # 删除压缩包
             if os.path.exists(archive_path):
@@ -188,6 +203,9 @@ class KaggleAutomation:
             # 清理失败的文件
             if os.path.exists(archive_path):
                 os.remove(archive_path)
+            # 清理可能不完整的驱动文件
+            if os.path.exists(driver_path):
+                os.remove(driver_path)
             raise
 
     def ensure_initialized(self):
@@ -199,7 +217,6 @@ class KaggleAutomation:
     def login(self):
         """登录 Kaggle"""
         try:
-            # 保持你原有的登录网址
             self.driver.get("https://www.kaggle.com/account/login?phase=emailSignIn")
             time.sleep(5)
             
@@ -211,7 +228,6 @@ class KaggleAutomation:
                     print("❌ 需要登录但未提供账号密码")
                     return False
                 
-                # 需要登录 - 保持你原有的登录逻辑
                 print("🔐 执行自动登录...")
                 email_input = WebDriverWait(self.driver, 10).until(
                     EC.presence_of_element_located((By.NAME, "email"))
@@ -224,7 +240,6 @@ class KaggleAutomation:
                 login_button = self.driver.find_element(By.XPATH, "//button[@type='submit']")
                 login_button.click()
                 
-                # 等待跳转 - 保持你原有的逻辑
                 WebDriverWait(self.driver, 15).until(
                     lambda d: "login" not in d.current_url
                 )
@@ -239,7 +254,7 @@ class KaggleAutomation:
             return False
 
     def check_login_status(self):
-        """检查登录状态 - 修改为访问登录页面"""
+        """检查登录状态"""
         print("🔍 检测登录状态...")
         self.driver.get("https://www.kaggle.com/account/login?phase=emailSignIn")
         time.sleep(5)
@@ -257,19 +272,16 @@ class KaggleAutomation:
     def run_notebook(self, notebook_path: str) -> bool:
         """运行指定的 notebook"""
         try:
-            # 确保已登录
             if not self.check_login_status():
                 if not self.login():
                     return False
             
-            # 运行 notebook - 保持你原有的网址格式
             notebook_url = f"https://www.kaggle.com/code/{notebook_path}/edit/run/265492693"
             print(f"📓 访问 notebook: {notebook_url}")
             
             self.driver.get(notebook_url)
             time.sleep(10)
             
-            # 保存版本 - 保持你原有的按钮逻辑
             print("💾 保存版本...")
             save_version_btn = WebDriverWait(self.driver, 15).until(
                 EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()='Save Version']]"))
@@ -294,9 +306,8 @@ class KaggleAutomation:
             return False
 
     def stop_session(self) -> bool:
-        """停止当前会话 - 修改为先查找Running状态，再查找旁边的more_horiz按钮"""
+        """停止当前会话"""
         try:
-            # 访问 Kaggle 首页
             print("🌐 访问 Kaggle 首页...")
             self.driver.get("https://www.kaggle.com")
             time.sleep(5)
@@ -307,7 +318,6 @@ class KaggleAutomation:
             
             print("✅ 已登录状态")
             
-            # 第一步：点击 View Active Events (P标签) - 完全保持你原有的选择器
             print("1. 点击 'View Active Events'...")
             first_button_selectors = [
                 "//p[contains(@class, 'sc-gGKoUb') and contains(text(), 'View Active Events')]",
@@ -334,16 +344,12 @@ class KaggleAutomation:
             print("✅ 点击第一个按钮成功")
             time.sleep(3)
             
-            # 第二步：先查找Running状态，然后查找旁边的more_horiz按钮
             print("2. 查找Running状态并点击旁边的'more_horiz'按钮...")
             
-            # 方法1: 先查找Running状态，然后找同一行中的more_horiz按钮
             try:
-                # 查找包含"Running"文本的元素
                 running_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Running')]")
                 if running_elements:
                     print("✅ 找到Running状态")
-                    # 找到Running元素所在的容器，然后在其中查找more_horiz按钮
                     running_container = running_elements[0].find_element(By.XPATH, "./ancestor::div[contains(@class, 'sc-dcMTLQ') or contains(@class, 'session-item')][1]")
                     more_horiz_buttons = running_container.find_elements(By.XPATH, ".//button[contains(text(), 'more_horiz')]")
                     
@@ -354,7 +360,6 @@ class KaggleAutomation:
                         print("✅ 点击第二个按钮成功")
                         time.sleep(3)
                     else:
-                        # 如果方法1失败，使用原有的选择器
                         print("⚠️ 通过Running状态未找到按钮，使用原有选择器")
                         if not self.click_more_horiz_original():
                             return False
@@ -367,7 +372,6 @@ class KaggleAutomation:
                 if not self.click_more_horiz_original():
                     return False
             
-            # 第三步：点击 Stop Session (P标签) - 完全保持你原有的选择器
             print("3. 点击 'Stop Session'...")
             third_button_selectors = [
                 "//p[contains(@class, 'sc-hwddKA') and contains(text(), 'Stop Session')]",
@@ -449,28 +453,26 @@ class KaggleAutomation:
             self.driver = None
             self.is_running = False
 
+# 其余的插件类代码保持不变...
 @register("kaggle_auto", "AstrBot", "Kaggle Notebook 自动化插件", "1.0.0")
 class KaggleAutoStar(Star):
     def __init__(self, context: Context, config):
         super().__init__(context)
         self.config = config
         
-        # 设置插件数据目录
-        current_file = Path(__file__).parent  # 插件代码所在目录
+        current_file = Path(__file__).parent
         self.plugin_data_dir = current_file.parent.parent / "plugin_data" / "astrbot_plugin_kagglerun"
         
         self.notebooks: Dict[str, str] = {}
         self.notebooks_file = self.plugin_data_dir / "kaggle_notebooks.json"
         self.auto_stop_task = None
         
-        # 初始化 Kaggle 管理器
         self.kaggle_manager = KaggleAutomation(
             email=self.config.kaggle_email,
             password=self.config.kaggle_password,
             plugin_data_dir=self.plugin_data_dir
         )
         
-        # 初始化
         self.setup_directories()
         self.load_notebooks()
         self.start_auto_tasks()
@@ -508,7 +510,6 @@ class KaggleAutoStar(Star):
 
     def start_auto_tasks(self):
         """启动自动任务"""
-        # 自动停止任务
         if self.auto_stop_task:
             self.auto_stop_task.cancel()
         
@@ -518,7 +519,7 @@ class KaggleAutoStar(Star):
         """自动停止监控任务"""
         while True:
             try:
-                await asyncio.sleep(60)  # 每分钟检查一次
+                await asyncio.sleep(60)
                 
                 if (self.kaggle_manager.is_running and 
                     self.config.auto_stop_enabled):
@@ -542,18 +543,15 @@ class KaggleAutoStar(Star):
         try:
             identifier = str(identifier)
             
-            # 尝试按序号查找
             if identifier.isdigit():
                 index = int(identifier) - 1
                 notebooks_list = list(self.notebooks.items())
                 if 0 <= index < len(notebooks_list):
                     return notebooks_list[index]
             
-            # 尝试按名称查找
             if identifier in self.notebooks:
                 return (identifier, self.notebooks[identifier])
             
-            # 尝试模糊匹配
             for name, path in self.notebooks.items():
                 if identifier.lower() in name.lower():
                     return (name, path)
@@ -606,7 +604,6 @@ class KaggleAutoStar(Star):
             yield event.plain_result(f"❌ 名称 '{name}' 已存在")
             return
         
-        # 验证notebook路径格式
         if '/' not in path:
             yield event.plain_result("❌ Notebook路径格式错误，应为: username/slug")
             return
@@ -619,14 +616,12 @@ class KaggleAutoStar(Star):
     @kaggle_group.command("remove")
     async def kaggle_remove(self, event: AstrMessageEvent, name: str):
         """删除notebook"""
-        # 尝试按名称删除
         if name in self.notebooks:
             del self.notebooks[name]
             self.save_notebooks()
             yield event.plain_result(f"✅ 已删除: {name}")
             return
         
-        # 尝试按序号删除
         notebook_info = self.get_notebook_by_identifier(name)
         if notebook_info:
             notebook_name, _ = notebook_info
@@ -640,7 +635,6 @@ class KaggleAutoStar(Star):
     @kaggle_group.command("run")
     async def kaggle_run(self, event: AstrMessageEvent, name: str = None):
         """运行notebook"""
-        # 使用默认notebook如果未指定
         if not name and self.config.default_notebook:
             name = self.config.default_notebook
         
@@ -656,7 +650,6 @@ class KaggleAutoStar(Star):
         notebook_name, notebook_path = notebook_info
         
         try:
-            # 确保驱动已初始化
             self.kaggle_manager.ensure_initialized()
             
             yield event.plain_result(f"🚀 开始运行 notebook: {notebook_name}")
@@ -735,7 +728,6 @@ class KaggleAutoStar(Star):
         try:
             message = event.message_str
             
-            # 检查自动启动关键词
             if (self.config.auto_start_enabled and 
                 self.should_auto_start(message) and 
                 self.config.default_notebook and
@@ -746,10 +738,8 @@ class KaggleAutoStar(Star):
                     notebook_name, notebook_path = notebook_info
                     logger.info(f"🚀 检测到自动启动关键词，启动默认notebook: {notebook_name}")
                     
-                    # 发送启动通知
                     await event.send(event.plain_result(f"🚀 检测到启动关键词，正在自动运行 {notebook_name}..."))
                     
-                    # 确保驱动已初始化
                     self.kaggle_manager.ensure_initialized()
                     
                     if self.kaggle_manager.run_notebook(notebook_path):
@@ -759,7 +749,6 @@ class KaggleAutoStar(Star):
                     else:
                         await event.send(event.plain_result(f"❌ {notebook_name} 自动启动失败"))
             
-            # 检查维持运行关键词
             if (self.kaggle_manager.is_running and 
                 self.config.auto_stop_enabled and
                 self.should_keep_running(message)):
@@ -799,7 +788,6 @@ class KaggleAutoStar(Star):
         if self.kaggle_manager:
             self.kaggle_manager.close()
         
-        # 取消自动任务
         if self.auto_stop_task:
             self.auto_stop_task.cancel()
             
