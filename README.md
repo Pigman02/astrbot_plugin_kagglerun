@@ -1,3 +1,4 @@
 # astrbot_plugin_kagglerun
-本来想拿来远程启动kaggle部署ai绘图的，然而kaggle api莫得选gpu的功能选不了t4，没办法了
-可以用于在群里远程启动notebook
+远程启动kaggle部署ai绘图
+推荐项目https://www.kaggle.com/code/qq2575044704/stable-diffusion-webui-novelai-edited-version-2
+kaggle自己加个frp就能用，测试过了可以用sakurefrp,代码就在项目里去sakurefrp复制节点让ds填
