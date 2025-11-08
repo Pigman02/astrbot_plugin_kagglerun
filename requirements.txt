@@ -1,3 +1,2 @@
-kaggle>=1.5.16
-aiofiles>=23.2.1
-aiohttp>=3.9.1
+selenium>=4.15.0
+requests>=2.31.0
