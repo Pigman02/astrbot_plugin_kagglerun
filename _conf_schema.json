@@ -1,41 +1,75 @@
 {
   "kaggle_email": {
+    "description": "Kaggle 邮箱",
     "type": "string",
-    "description": "Kaggle 邮箱账号",
-    "hint": "用于登录 Kaggle 的邮箱地址"
+    "hint": "用于登录 Kaggle 的邮箱地址",
+    "default": ""
   },
   "kaggle_password": {
-    "type": "string", 
-    "description": "Kaggle 密码",
-    "hint": "用于登录 Kaggle 的密码"
-  },
-  "auto_stop_enabled": {
-    "type": "bool",
-    "description": "启用自动停止",
-    "default": false,
-    "hint": "运行后自动在设定时间后停止会话"
-  },
-  "auto_stop_timeout": {
-    "type": "int",
-    "description": "自动停止超时时间(分钟)",
-    "default": 30,
-    "hint": "运行后多少分钟自动停止会话"
+    "description": "Kaggle 密码", 
+    "type": "string",
+    "hint": "用于登录 Kaggle 的密码",
+    "default": ""
   },
   "default_notebook": {
-    "type": "string",
     "description": "默认 Notebook",
-    "hint": "默认运行的 notebook 名称"
+    "type": "string", 
+    "hint": "设置默认运行的 notebook 名称（在 /kaggle run 不指定名称时使用）",
+    "default": ""
+  },
+  "auto_stop_enabled": {
+    "description": "启用自动停止",
+    "type": "bool",
+    "hint": "是否启用运行后自动停止功能",
+    "default": true
+  },
+  "auto_stop_timeout": {
+    "description": "自动停止时间(分钟)",
+    "type": "int",
+    "hint": "运行后多少分钟自动停止会话",
+    "default": 30
+  },
+  "auto_start_enabled": {
+    "description": "启用自动启动",
+    "type": "bool", 
+    "hint": "是否启用群聊关键词自动启动功能",
+    "default": true
   },
   "auto_start_keywords": {
-    "type": "list",
     "description": "自动启动关键词",
-    "default": [],
-    "hint": "群聊中触发自动启动的关键词列表"
+    "type": "list",
+    "hint": "群聊中触发自动启动默认 notebook 的关键词列表",
+    "default": ["启动kaggle", "开始运行", "run kaggle", "kaggle启动"]
   },
   "keep_running_keywords": {
-    "type": "list", 
-    "description": "维持运行关键词",
-    "default": [],
-    "hint": "重置自动停止计时器的关键词列表"
+    "description": "维持运行关键词", 
+    "type": "list",
+    "hint": "检测到这些关键词会重置自动停止计时器，让会话继续运行",
+    "default": ["继续运行", "保持运行", "不要停", "继续kaggle"]
+  },
+  "browser_timeout": {
+    "description": "浏览器操作超时(秒)",
+    "type": "int",
+    "hint": "浏览器操作的超时时间，单位秒",
+    "default": 30
+  },
+  "headless_mode": {
+    "description": "无头模式",
+    "type": "bool",
+    "hint": "是否使用无头模式运行浏览器（推荐开启）",
+    "default": true
+  },
+  "screenshot_on_error": {
+    "description": "错误时截图",
+    "type": "bool",
+    "hint": "发生错误时自动保存截图用于调试",
+    "default": true
+  },
+  "log_level": {
+    "description": "日志级别",
+    "type": "string",
+    "hint": "设置日志输出级别：DEBUG, INFO, WARNING, ERROR",
+    "default": "INFO",
+    "options": ["DEBUG", "INFO", "WARNING", "ERROR"]
   }
 }
