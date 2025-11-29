@@ -1,6 +1,6 @@
 name: astrbot_plugin_kagglerun # 这是你的插件的唯一识别名。
-display_name: _kagglerun # 用于展示的名字，可以是方便人类阅读的名字（需要版本 >= v4.5.0，低版本不会报错，请放心填写）
-desc: 在群里启动kaggle白嫖的sd # 插件简短描述
+display_name: kagglerun # 用于展示的名字，可以是方便人类阅读的名字（需要版本 >= v4.5.0，低版本不会报错，请放心填写）
+desc: 用于白嫖kaggle的算力跑sd，并在群里面启动 # 插件简短描述
 version: v1.0 # 插件版本号。格式：v1.1.1 或者 v1.1
 author: pigman02 # 作者
 repo: https://github.com/Pigman02/astrbot_plugin_kagglerun # 插件的仓库地址
