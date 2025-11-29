@@ -186,10 +186,12 @@ class KaggleAutoStar(Star):
         super().__init__(context)
         self.config = config
         
-        # --- 修复部分：使用当前文件路径作为基准 ---
+        # ==========================================================
+        # 核心修复点: 使用当前文件路径(__file__)的父目录，而不是 context.base_config_dir
+        # ==========================================================
         self.plugin_data_dir = Path(__file__).parent / "data"
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
-        # -------------------------------------
+        # ==========================================================
         
         self.notebooks_file = self.plugin_data_dir / "notebooks.json"
         
