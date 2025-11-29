@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import sys
+import time
 from typing import Dict, Optional
 from datetime import datetime
 from pathlib import Path
@@ -39,7 +40,6 @@ class KaggleManager:
         """后台检测并安装 Firefox 浏览器"""
         logger.info("🔍 正在检查 Firefox 环境...")
         try:
-            # 调用 python -m playwright install firefox
             cmd = [sys.executable, "-m", "playwright", "install", "firefox"]
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -50,7 +50,6 @@ class KaggleManager:
             
             if process.returncode != 0:
                 err_msg = stderr.decode().strip()
-                # 忽略非致命警告
                 if "Failed to install" in err_msg:
                     logger.error(f"❌ 浏览器安装失败: {err_msg}")
                     raise Exception(err_msg)
@@ -69,13 +68,23 @@ class KaggleManager:
         logger.info("🚀 启动 Playwright (Firefox)...")
         self.playwright = await async_playwright().start()
         
-        # 启动持久化上下文
+        # ================= [优化2] 浏览器伪装 =================
+        # 增加参数以规避检测，模拟常规 Windows Chrome 环境
+        args = [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled", # 隐藏自动化特征
+        ]
+        
         self.context = await self.playwright.firefox.launch_persistent_context(
             user_data_dir=self.user_data_dir,
-            headless=True, # 生产环境建议 True (无头模式)
+            headless=True,
             viewport={"width": 1920, "height": 1080},
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
+            args=args,
+            # 伪装 User-Agent
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
+        # ====================================================
         
         self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
 
@@ -126,7 +135,12 @@ class KaggleManager:
             if not await self.check_login_status():
                 if not await self.login(): return False
 
-            notebook_url = f"https://www.kaggle.com/code/{notebook_path}/edit/run/265492693"
+            # ================= [优化1] URL 修正 =================
+            # 移除硬编码 ID，使用 /edit 自动跳转最新版
+            notebook_url = f"https://www.kaggle.com/code/{notebook_path}/edit"
+            # ====================================================
+            
+            logger.info(f"📓 访问 Notebook: {notebook_url}")
             await self.page.goto(notebook_url, timeout=60000, wait_until="domcontentloaded")
             
             # 点击 Save Version
@@ -186,21 +200,18 @@ class KaggleAutoStar(Star):
         super().__init__(context)
         self.config = config
         
-        # ==========================================================
-        # 核心修复点: 使用当前文件路径(__file__)的父目录，而不是 context.base_config_dir
-        # ==========================================================
+        # 路径配置
         self.plugin_data_dir = Path(__file__).parent / "data"
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
-        # ==========================================================
-        
         self.notebooks_file = self.plugin_data_dir / "notebooks.json"
         
         self.notebooks: Dict[str, str] = {}
         self.manager = KaggleManager(self.config.kaggle_email, self.config.kaggle_password, self.plugin_data_dir)
         
-        self.load_notebooks()
+        # [优化3] 初始化回复冷却时间戳
+        self.last_reply_time = 0 
         
-        # 启动监控任务
+        self.load_notebooks()
         self.monitor_task = asyncio.create_task(self.auto_stop_monitor())
 
     def load_notebooks(self):
@@ -238,7 +249,6 @@ class KaggleAutoStar(Star):
                 await self.monitor_task
             except asyncio.CancelledError:
                 pass
-        
         if self.manager:
             await self.manager.close()
         logger.info("✅ 资源释放完成")
@@ -292,8 +302,6 @@ class KaggleAutoStar(Star):
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_msg(self, event: AstrMessageEvent):
         if not event.message_str: return
-        
-        # 防止自身循环
         if event.get_self_id() == event.get_sender_id(): return
 
         msg = event.message_str.lower()
@@ -312,10 +320,19 @@ class KaggleAutoStar(Star):
                         if await self.manager.run_notebook(path):
                             await event.send(event.plain_result(f"✅ {target} 启动成功"))
 
-            # 保活
+            # 保活逻辑
             if (self.config.auto_stop_enabled and self.manager.is_running):
                 if any(kw.lower() in msg for kw in self.config.keep_running_keywords):
+                    # 1. 无论如何都重置后台计时器
                     self.manager.last_activity_time = datetime.now()
+                    
+                    # 2. [优化3] 检查是否超过冷却时间 (300秒 = 5分钟)
+                    now = time.time()
+                    if now - self.last_reply_time > 300:
+                        self.last_reply_time = now
+                        await event.send(event.plain_result("⏳ 检测到活跃指令，已自动延长 Kaggle 运行时长。"))
+                    else:
+                        logger.debug("保活触发 (冷却期内静默)")
                     
         except Exception as e:
             logger.error(f"Kaggle 监听器错误: {e}")
