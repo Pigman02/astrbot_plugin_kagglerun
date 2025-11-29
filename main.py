@@ -389,7 +389,7 @@ class KaggleAutoStar(Star):
                 if any(kw.lower() in msg for kw in self.config.keep_running_keywords):
                     self.manager.last_activity_time = datetime.now()
                     now = time.time()
-                    if now - self.last_reply_time > 300:
+                    if now - self.last_reply_time > 3600:
                         self.last_reply_time = now
                         await event.send(event.plain_result("⏳ 已延长运行时长"))
         except Exception:
