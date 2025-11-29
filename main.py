@@ -3,7 +3,7 @@ import json
 import asyncio
 import sys
 import time
-# [修复1] 引入 Any 用于配置类型提示
+import re  # [新增] 引入正则模块，用于模糊匹配选择器
 from typing import Dict, Optional, Any, Tuple
 from datetime import datetime
 from pathlib import Path
@@ -34,9 +34,9 @@ class KaggleManager:
         self.is_running = False
         self.last_activity_time = None
         
-        # [优化3] 并发控制锁
-        self._install_lock = asyncio.Lock() # 安装锁
-        self._run_lock = asyncio.Lock()     # 运行锁 (核心)
+        # 并发控制锁
+        self._install_lock = asyncio.Lock()
+        self._run_lock = asyncio.Lock()
         
         # 用户数据目录
         self.user_data_dir = self.data_dir / "browser_data"
@@ -81,21 +81,21 @@ class KaggleManager:
         logger.info("🚀 启动 Playwright (Firefox)...")
         self.playwright = await async_playwright().start()
         
+        # 伪装参数
         args = [
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
         ]
-        
-        # [修复2] 修正 User-Agent 为合法的 Firefox UA，防止指纹风控
+        # Firefox 伪装 UA
         firefox_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0"
 
         self.context = await self.playwright.firefox.launch_persistent_context(
             user_data_dir=self.user_data_dir,
-            headless=True,
+            headless=True, # 调试时可改为 False
             viewport={"width": 1920, "height": 1080},
             args=args,
-            user_agent=firefox_ua # 使用匹配内核的 UA
+            user_agent=firefox_ua
         )
         
         self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
@@ -106,10 +106,8 @@ class KaggleManager:
         try:
             if self.context:
                 await asyncio.wait_for(self.context.close(), timeout=5.0)
-            
             if self.playwright:
                 await asyncio.wait_for(self.playwright.stop(), timeout=5.0)
-                
         except asyncio.TimeoutError:
             logger.warning("⚠️ 关闭浏览器资源超时")
         except Exception as e:
@@ -135,6 +133,7 @@ class KaggleManager:
             if "login" not in self.page.url:
                 await self.page.goto("https://www.kaggle.com/account/login?phase=emailSignIn")
             
+            # 使用 get_by_role 或 locator 均可，这里保持原样因为它很稳定
             await self.page.wait_for_selector("input[name='email']", timeout=15000)
             await self.page.fill("input[name='email']", self.email)
             await self.page.fill("input[name='password']", self.password)
@@ -146,24 +145,15 @@ class KaggleManager:
             return False
 
     async def run_notebook(self, notebook_path: str) -> Tuple[bool, str]:
-        """
-        [修复3] 运行 Notebook (增加并发锁)
-        返回: (是否成功, 提示信息)
-        """
-        # 1. 检查是否正在运行
+        """运行 Notebook"""
         if self.is_running:
             return False, "⚠️ 已有 Notebook 正在运行中，请先停止当前会话。"
-            
-        # 2. 检查是否正在启动中 (锁是否被占用)
         if self._run_lock.locked():
             return False, "⏳ 正在启动中，请勿重复操作..."
 
-        # 3. 获取锁并执行
         async with self._run_lock:
             try:
                 await self.init_browser()
-                
-                # 登录检查
                 if not await self.check_login_status():
                     if not await self.login(): 
                         return False, "❌ 登录失败，请检查账号密码。"
@@ -172,19 +162,20 @@ class KaggleManager:
                 logger.info(f"📓 访问 Notebook: {notebook_url}")
                 await self.page.goto(notebook_url, timeout=60000, wait_until="domcontentloaded")
                 
-                # 点击 Save Version
+                # [更新] 使用语义化选择器点击 "Save Version"
                 try:
-                    save_btn = self.page.locator("//button[.//span[text()='Save Version']]")
-                    await save_btn.wait_for(state="visible", timeout=30000)
-                    await save_btn.click()
+                    # 优先尝试 get_by_role，这比 XPath 更稳
+                    save_btn = self.page.get_by_role("button", name="Save Version")
+                    await save_btn.click(timeout=30000)
                 except Exception:
-                     return False, "❌ 找不到 'Save Version' 按钮，可能是 Kaggle 界面变动或加载失败。"
+                     # 备用方案
+                     return False, "❌ 找不到 'Save Version' 按钮，页面可能未加载完成。"
                 
-                # 点击确认 Save
+                # [更新] 点击确认 "Save"
                 try:
-                    confirm_btn = self.page.locator("//button[.//span[text()='Save']]")
-                    await confirm_btn.wait_for(state="visible", timeout=15000)
-                    await confirm_btn.click()
+                    # exact=True 确保只匹配 "Save" 而不是 "Save & Run" 之类的
+                    confirm_btn = self.page.get_by_role("button", name="Save", exact=True)
+                    await confirm_btn.click(timeout=15000)
                 except Exception:
                     return False, "❌ 找不到确认保存按钮。"
                 
@@ -194,30 +185,59 @@ class KaggleManager:
                 
             except Exception as e:
                 logger.error(f"运行失败: {e}")
-                return False, f"❌ 运行发生异常: {str(e)}"
+                return False, f"❌ 运行异常: {str(e)}"
 
     async def stop_session(self) -> bool:
+        """
+        停止会话
+        [重点更新] 使用正则模糊匹配，不再依赖具体的 Notebook 名称
+        """
         try:
             if not self.page: return False
             await self.page.goto("https://www.kaggle.com", wait_until="domcontentloaded")
             if "login" in self.page.url: return False
 
-            async def click_any(selectors):
-                for s in selectors:
-                    loc = self.page.locator(s)
-                    if await loc.count() > 0 and await loc.first.is_visible():
-                        await loc.first.click()
-                        return True
+            # 1. 点击底部的 Active Events
+            # 使用正则匹配，忽略可能存在的数字或View前缀
+            active_bar = self.page.get_by_text(re.compile(r"Active Events"))
+            if await active_bar.count() > 0:
+                # 如果有多个（极少见），点第一个可见的
+                for i in range(await active_bar.count()):
+                    if await active_bar.nth(i).is_visible():
+                        await active_bar.nth(i).click()
+                        break
+            else:
+                logger.warning("未找到活动会话栏 (Active Events)")
+                # 如果找不到，说明可能根本没运行，但也可能是收起来了，暂且返回失败
                 return False
 
-            if not await click_any(["//p[contains(text(), 'View Active Events')]"]): return False
-            await asyncio.sleep(1)
-            if not await click_any(["//button[contains(text(), 'more_horiz')]"]): return False
-            await asyncio.sleep(1)
-            if not await click_any(["//p[contains(text(), 'Stop Session')]"]): return False
+            await asyncio.sleep(1) # 等待列表动画
+
+            # 2. 点击 "More options..." 菜单按钮
+            # 关键：使用正则 ^More options for 匹配开头
+            # 这样无论后面跟的是 stable-diffusion 还是其他名字，都能选中
+            more_btn = self.page.get_by_label(re.compile(r"^More options for"))
             
-            self.is_running = False
-            return True
+            if await more_btn.count() > 0:
+                # 默认停止列表中的第一个运行实例
+                await more_btn.first.click()
+            else:
+                logger.warning("未找到更多选项按钮 (More options)")
+                return False
+            
+            await asyncio.sleep(1) # 等待菜单弹出
+
+            # 3. 点击 Stop Session
+            stop_btn = self.page.get_by_text("Stop Session")
+            if await stop_btn.count() > 0:
+                await stop_btn.click()
+                logger.info("🎉 成功点击 Stop Session")
+                self.is_running = False
+                return True
+            else:
+                logger.warning("未找到停止按钮")
+                return False
+
         except Exception as e:
             logger.error(f"停止失败: {e}")
             return False
@@ -229,11 +249,11 @@ class KaggleManager:
 
 @register("kaggle_auto", "AstrBot", "Kaggle Notebook 自动化插件", "1.0.0")
 class KaggleAutoStar(Star):
-    # [修复1] 修正类型提示为 Any，防止 IDE 误报
     def __init__(self, context: Context, config: Any):
         super().__init__(context)
         self.config = config
         
+        # 路径规范化
         self.plugin_data_dir = Path(StarTools.get_data_dir("astrbot_plugin_kagglerun"))
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
         
@@ -261,6 +281,7 @@ class KaggleAutoStar(Star):
         await asyncio.to_thread(_write)
 
     async def auto_stop_monitor(self):
+        """后台监控任务"""
         while True:
             try:
                 await asyncio.sleep(60)
@@ -321,18 +342,15 @@ class KaggleAutoStar(Star):
             yield event.plain_result("❌ 未找到该 Notebook，请检查名称。")
             return
         
-        # [优化3] 接收 manager 返回的状态和消息
         yield event.plain_result(f"🚀 正在尝试启动 {target}...")
         
         success, msg = await self.manager.run_notebook(self.notebooks[target])
         
         if success:
-            # 成功时，追加自动停止提示
             if self.config.auto_stop_enabled:
                 msg += f"\n(将在 {self.config.auto_stop_timeout} 分钟无活动后自动停止)"
             yield event.plain_result(msg)
         else:
-            # 失败/忙碌时，直接返回错误原因
             yield event.plain_result(msg)
 
     @kaggle_group.command("stop")
@@ -341,7 +359,7 @@ class KaggleAutoStar(Star):
         if await self.manager.stop_session():
             yield event.plain_result("✅ 已停止")
         else:
-            yield event.plain_result("❌ 停止失败")
+            yield event.plain_result("❌ 停止失败，未找到运行中的会话。")
             
     @kaggle_group.command("status")
     async def status(self, event: AstrMessageEvent):
@@ -366,12 +384,10 @@ class KaggleAutoStar(Star):
                     target = self.config.default_notebook
                     path = self.notebooks.get(target)
                     if path:
-                        # 尝试启动，使用 run_notebook 的锁机制来处理并发
-                        # 如果锁住了，run_notebook 会返回 False，这里静默失败即可，或者打个日志
+                        # 尝试启动，如果锁住了会静默失败
                         success, _ = await self.manager.run_notebook(path)
                         if success:
                             await event.send(event.plain_result(f"✅ 检测到关键词，已自动启动 {target}"))
-                        # 如果失败（比如正在启动中），这里不做多余回复，避免打扰群聊
 
             # 保活
             if (self.config.auto_stop_enabled and self.manager.is_running):
