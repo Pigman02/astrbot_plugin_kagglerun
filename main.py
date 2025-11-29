@@ -11,6 +11,8 @@ from pathlib import Path
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
+# [优化1] 导入 StarTools 用于获取规范路径
+from astrbot.api.star import StarTools 
 
 # Playwright 导入
 from playwright.async_api import async_playwright, Playwright, BrowserContext, Page
@@ -31,32 +33,47 @@ class KaggleManager:
         # 状态
         self.is_running = False
         self.last_activity_time = None
+        self._install_lock = asyncio.Lock() # 防止并发触发安装
         
         # 用户数据目录
         self.user_data_dir = self.data_dir / "browser_data"
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
 
     async def _ensure_browser_installed(self):
-        """后台检测并安装 Firefox 浏览器"""
-        logger.info("🔍 正在检查 Firefox 环境...")
-        try:
-            cmd = [sys.executable, "-m", "playwright", "install", "firefox"]
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            _, stderr = await process.communicate()
-            
-            if process.returncode != 0:
-                err_msg = stderr.decode().strip()
-                if "Failed to install" in err_msg:
-                    logger.error(f"❌ 浏览器安装失败: {err_msg}")
-                    raise Exception(err_msg)
-            logger.info("✅ Firefox 环境就绪")
-        except Exception as e:
-            logger.error(f"环境检查异常: {e}")
-            raise
+        """
+        [优化4] 后台检测并安装 Firefox 浏览器
+        优化点：增加并发锁，优化报错提示
+        """
+        async with self._install_lock:
+            logger.info("🔍 [Playwright] 正在检查 Firefox 环境...")
+            try:
+                # 使用 subprocess 避免阻塞，且复用当前 Python 环境
+                cmd = [sys.executable, "-m", "playwright", "install", "firefox"]
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                # 设置超时，防止安装过程无限挂起
+                try:
+                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300) # 5分钟超时
+                except asyncio.TimeoutError:
+                    process.kill()
+                    raise Exception("下载浏览器超时，请检查网络或尝试手动安装")
+
+                if process.returncode != 0:
+                    err_msg = stderr.decode().strip()
+                    # 忽略非致命警告
+                    if "Failed to install" not in err_msg and "Err" not in err_msg:
+                        logger.debug(f"Playwright install output: {err_msg}")
+                    else:
+                        logger.error(f"❌ 浏览器安装失败: {err_msg}")
+                        logger.error("💡 提示: 如果是 Docker 环境，请进入容器执行: playwright install-deps")
+                        raise Exception(err_msg)
+                logger.info("✅ [Playwright] Firefox 环境就绪")
+            except Exception as e:
+                logger.error(f"环境检查异常: {e}")
+                raise
 
     async def init_browser(self):
         """初始化浏览器资源"""
@@ -68,12 +85,11 @@ class KaggleManager:
         logger.info("🚀 启动 Playwright (Firefox)...")
         self.playwright = await async_playwright().start()
         
-        # ================= [优化2] 浏览器伪装 =================
-        # 增加参数以规避检测，模拟常规 Windows Chrome 环境
+        # 浏览器伪装参数
         args = [
             "--no-sandbox",
             "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled", # 隐藏自动化特征
+            "--disable-blink-features=AutomationControlled",
         ]
         
         self.context = await self.playwright.firefox.launch_persistent_context(
@@ -81,21 +97,27 @@ class KaggleManager:
             headless=True,
             viewport={"width": 1920, "height": 1080},
             args=args,
-            # 伪装 User-Agent
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        # ====================================================
         
         self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
 
     async def close(self):
-        """安全关闭所有资源"""
+        """
+        [优化3] 安全关闭所有资源
+        优化点：增加 wait_for 超时控制，防止浏览器僵死导致插件卸载卡住
+        """
         logger.info("🔌 正在关闭浏览器资源...")
         try:
             if self.context:
-                await self.context.close()
+                # 限制关闭操作最多耗时 5 秒
+                await asyncio.wait_for(self.context.close(), timeout=5.0)
+            
             if self.playwright:
-                await self.playwright.stop()
+                await asyncio.wait_for(self.playwright.stop(), timeout=5.0)
+                
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ 关闭浏览器资源超时，强制释放引用")
         except Exception as e:
             logger.error(f"关闭浏览器资源时出错 (可忽略): {e}")
         finally:
@@ -135,11 +157,7 @@ class KaggleManager:
             if not await self.check_login_status():
                 if not await self.login(): return False
 
-            # ================= [优化1] URL 修正 =================
-            # 移除硬编码 ID，使用 /edit 自动跳转最新版
             notebook_url = f"https://www.kaggle.com/code/{notebook_path}/edit"
-            # ====================================================
-            
             logger.info(f"📓 访问 Notebook: {notebook_url}")
             await self.page.goto(notebook_url, timeout=60000, wait_until="domcontentloaded")
             
@@ -174,13 +192,10 @@ class KaggleManager:
                         return True
                 return False
 
-            # 1. View Active Events
             if not await click_any(["//p[contains(text(), 'View Active Events')]"]): return False
             await asyncio.sleep(1)
-            # 2. More Options
             if not await click_any(["//button[contains(text(), 'more_horiz')]"]): return False
             await asyncio.sleep(1)
-            # 3. Stop Session
             if not await click_any(["//p[contains(text(), 'Stop Session')]"]): return False
             
             self.is_running = False
@@ -200,30 +215,40 @@ class KaggleAutoStar(Star):
         super().__init__(context)
         self.config = config
         
-        # 路径配置
-        self.plugin_data_dir = Path(__file__).parent / "data"
+        # [优化1] 路径规范化：使用 StarTools.get_data_dir()
+        # 这里的 "astrbot_plugin_kagglerun" 建议和文件夹名保持一致
+        self.plugin_data_dir = Path(StarTools.get_data_dir("astrbot_plugin_kagglerun"))
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
+        
         self.notebooks_file = self.plugin_data_dir / "notebooks.json"
         
         self.notebooks: Dict[str, str] = {}
         self.manager = KaggleManager(self.config.kaggle_email, self.config.kaggle_password, self.plugin_data_dir)
         
-        # [优化3] 初始化回复冷却时间戳
-        self.last_reply_time = 0 
+        self.last_reply_time = 0
         
-        self.load_notebooks()
+        # 加载数据 (读操作通常很快，且只在初始化执行一次，暂保留同步读取，也可改为异步)
+        self.load_notebooks_sync()
+        
         self.monitor_task = asyncio.create_task(self.auto_stop_monitor())
 
-    def load_notebooks(self):
+    def load_notebooks_sync(self):
         if self.notebooks_file.exists():
             try:
                 with open(self.notebooks_file, 'r', encoding='utf-8') as f:
                     self.notebooks = json.load(f)
             except: self.notebooks = {}
 
-    def save_notebooks(self):
-        with open(self.notebooks_file, 'w', encoding='utf-8') as f:
-            json.dump(self.notebooks, f, indent=2, ensure_ascii=False)
+    async def save_notebooks(self):
+        """
+        [优化2] 异步文件保存
+        使用 asyncio.to_thread 将阻塞的 I/O 操作放入线程池，防止卡死 EventLoop
+        """
+        def _write():
+            with open(self.notebooks_file, 'w', encoding='utf-8') as f:
+                json.dump(self.notebooks, f, indent=2, ensure_ascii=False)
+        
+        await asyncio.to_thread(_write)
 
     async def auto_stop_monitor(self):
         """后台监控任务"""
@@ -235,7 +260,6 @@ class KaggleAutoStar(Star):
                         logger.info("⏰ 触发自动停止")
                         await self.manager.stop_session()
             except asyncio.CancelledError:
-                logger.info("监控任务已取消")
                 break
             except Exception:
                 await asyncio.sleep(60)
@@ -249,6 +273,8 @@ class KaggleAutoStar(Star):
                 await self.monitor_task
             except asyncio.CancelledError:
                 pass
+        
+        # [优化3] 调用经过优化的 close 方法
         if self.manager:
             await self.manager.close()
         logger.info("✅ 资源释放完成")
@@ -264,8 +290,19 @@ class KaggleAutoStar(Star):
     @kaggle_group.command("add")
     async def add(self, event: AstrMessageEvent, name: str, path: str):
         self.notebooks[name] = path
-        self.save_notebooks()
+        # [优化2] 调用异步保存方法
+        await self.save_notebooks()
         yield event.plain_result(f"已添加: {name}")
+
+    @kaggle_group.command("remove")
+    async def remove(self, event: AstrMessageEvent, name: str):
+        if name in self.notebooks:
+            del self.notebooks[name]
+            # [优化2] 调用异步保存方法
+            await self.save_notebooks()
+            yield event.plain_result(f"✅ 已删除: {name}")
+        else:
+            yield event.plain_result(f"❌ 未找到名为 {name} 的 Notebook")
 
     @kaggle_group.command("list")
     async def list_nb(self, event: AstrMessageEvent):
@@ -320,19 +357,17 @@ class KaggleAutoStar(Star):
                         if await self.manager.run_notebook(path):
                             await event.send(event.plain_result(f"✅ {target} 启动成功"))
 
-            # 保活逻辑
+            # 保活
             if (self.config.auto_stop_enabled and self.manager.is_running):
                 if any(kw.lower() in msg for kw in self.config.keep_running_keywords):
-                    # 1. 无论如何都重置后台计时器
                     self.manager.last_activity_time = datetime.now()
                     
-                    # 2. [优化3] 检查是否超过冷却时间 (300秒 = 5分钟)
                     now = time.time()
                     if now - self.last_reply_time > 300:
                         self.last_reply_time = now
-                        await event.send(event.plain_result("⏳ 检测到活跃指令，已自动延长 Kaggle 运行时长。"))
+                        await event.send(event.plain_result("⏳ 检测到活跃指令，已自动延长运行时长。"))
                     else:
-                        logger.debug("保活触发 (冷却期内静默)")
+                        logger.debug("保活触发 (静默)")
                     
         except Exception as e:
             logger.error(f"Kaggle 监听器错误: {e}")
