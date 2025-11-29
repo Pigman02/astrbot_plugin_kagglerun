@@ -12,7 +12,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 
 # Playwright 导入
-from playwright.async_api import async_playwright, Playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright, Playwright, BrowserContext, Page
 
 class KaggleManager:
     """Kaggle 自动化管理器 (逻辑层)"""
@@ -36,9 +36,10 @@ class KaggleManager:
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
 
     async def _ensure_browser_installed(self):
-        """后台检测并安装浏览器"""
+        """后台检测并安装 Firefox 浏览器"""
         logger.info("🔍 正在检查 Firefox 环境...")
         try:
+            # 调用 python -m playwright install firefox
             cmd = [sys.executable, "-m", "playwright", "install", "firefox"]
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -49,7 +50,7 @@ class KaggleManager:
             
             if process.returncode != 0:
                 err_msg = stderr.decode().strip()
-                # 忽略一些非致命警告
+                # 忽略非致命警告
                 if "Failed to install" in err_msg:
                     logger.error(f"❌ 浏览器安装失败: {err_msg}")
                     raise Exception(err_msg)
@@ -71,7 +72,7 @@ class KaggleManager:
         # 启动持久化上下文
         self.context = await self.playwright.firefox.launch_persistent_context(
             user_data_dir=self.user_data_dir,
-            headless=True, # 生产环境建议 True
+            headless=True, # 生产环境建议 True (无头模式)
             viewport={"width": 1920, "height": 1080},
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
@@ -185,9 +186,11 @@ class KaggleAutoStar(Star):
         super().__init__(context)
         self.config = config
         
-        # 路径配置
-        self.plugin_data_dir = Path(context.base_config_dir) / "data" / "plugins" / "astrbot_plugin_kaggle"
+        # --- 修复部分：使用当前文件路径作为基准 ---
+        self.plugin_data_dir = Path(__file__).parent / "data"
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
+        # -------------------------------------
+        
         self.notebooks_file = self.plugin_data_dir / "notebooks.json"
         
         self.notebooks: Dict[str, str] = {}
@@ -195,7 +198,7 @@ class KaggleAutoStar(Star):
         
         self.load_notebooks()
         
-        # 启动监控任务，并保存引用以便取消
+        # 启动监控任务
         self.monitor_task = asyncio.create_task(self.auto_stop_monitor())
 
     def load_notebooks(self):
@@ -224,15 +227,9 @@ class KaggleAutoStar(Star):
             except Exception:
                 await asyncio.sleep(60)
 
-    # ================= 核心修正点：Terminate 方法 =================
     async def terminate(self):
-        """
-        插件卸载/Bot关闭时的生命周期钩子。
-        必须清理所有后台任务和外部进程。
-        """
-        logger.info("🛑 Kaggle 插件正在卸载，开始清理资源...")
-        
-        # 1. 取消 Python 层的后台任务
+        """插件卸载清理"""
+        logger.info("🛑 Kaggle 插件正在卸载，清理资源...")
         if self.monitor_task and not self.monitor_task.done():
             self.monitor_task.cancel()
             try:
@@ -240,12 +237,9 @@ class KaggleAutoStar(Star):
             except asyncio.CancelledError:
                 pass
         
-        # 2. 关闭 Playwright 浏览器进程
-        # 这一步至关重要，否则服务器上会残留大量 firefox 僵尸进程
         if self.manager:
             await self.manager.close()
-            
-        logger.info("✅ Kaggle 插件资源已全部释放")
+        logger.info("✅ 资源释放完成")
 
     # ================= 指令处理 =================
     @filter.command_group("kaggle")
@@ -273,7 +267,7 @@ class KaggleAutoStar(Star):
             yield event.plain_result("未找到该 Notebook")
             return
         
-        yield event.plain_result(f"🚀 正在启动 {target}，请稍候...")
+        yield event.plain_result(f"🚀 正在启动 {target}...")
         if await self.manager.run_notebook(self.notebooks[target]):
             yield event.plain_result(f"✅ {target} 启动成功")
         else:
@@ -286,31 +280,24 @@ class KaggleAutoStar(Star):
             yield event.plain_result("✅ 已停止")
         else:
             yield event.plain_result("❌ 停止失败")
+            
+    @kaggle_group.command("status")
+    async def status(self, event: AstrMessageEvent):
+        state = "🟢 运行中" if self.manager.is_running else "⚪ 空闲"
+        yield event.plain_result(f"状态: {state}\n自动停止: {self.config.auto_stop_enabled}")
 
-    # ================= 核心修正点：标准消息监听器 =================
+    # ================= 消息监听 =================
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_msg(self, event: AstrMessageEvent):
-        """
-        监听群组消息。
-        注意：
-        1. 使用 try-except 防止后台报错影响主线程
-        2. 检查 sender_id != self_id 防止死循环 (虽然 EventMessageType.GROUP_MESSAGE 通常不包含自己，但加上更安全)
-        3. 这里不 yield 结果，而是使用 event.send() 主动发送，这是符合逻辑的。
-        """
-        # 1. 基础过滤
-        if not event.message_str:
-            return
-            
-        # 2. 防止死循环（如果平台适配器没过滤自己的话）
-        self_id = event.get_self_id()
-        sender_id = event.get_sender_id()
-        if self_id and sender_id and self_id == sender_id:
-            return
+        if not event.message_str: return
+        
+        # 防止自身循环
+        if event.get_self_id() == event.get_sender_id(): return
 
         msg = event.message_str.lower()
         
         try:
-            # 逻辑 A: 自动启动
+            # 自动启动
             if (self.config.auto_start_enabled and 
                 not self.manager.is_running and 
                 self.config.default_notebook):
@@ -319,23 +306,14 @@ class KaggleAutoStar(Star):
                     target = self.config.default_notebook
                     path = self.notebooks.get(target)
                     if path:
-                        logger.info(f"🚀 关键词触发: {target}")
-                        # 主动发送消息
-                        await event.send(event.plain_result(f"检测到关键词，自动启动 {target}..."))
-                        
+                        await event.send(event.plain_result(f"🚀 自动启动 {target}..."))
                         if await self.manager.run_notebook(path):
                             await event.send(event.plain_result(f"✅ {target} 启动成功"))
-                        else:
-                            await event.send(event.plain_result("❌ 自动启动失败"))
 
-            # 逻辑 B: 保活 (重置计时器)
-            if (self.config.auto_stop_enabled and 
-                self.manager.is_running):
-                
+            # 保活
+            if (self.config.auto_stop_enabled and self.manager.is_running):
                 if any(kw.lower() in msg for kw in self.config.keep_running_keywords):
-                    logger.debug("自动保活触发")
                     self.manager.last_activity_time = datetime.now()
                     
         except Exception as e:
-            # 监听器内部错误只打印日志，不抛出，避免影响其他插件
             logger.error(f"Kaggle 监听器错误: {e}")
